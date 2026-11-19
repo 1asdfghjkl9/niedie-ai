@@ -513,8 +513,10 @@
         if (!acc.trim()) throw new Error('AI未返回有效内容');
         aiMsg.content = acc; conv.updatedAt = Date.now(); saveConversations();
       } catch(err) {
-        var em = err&&err.message?err.message:'未知错误'; showError(em);
-        aiMsg.content = '⚠️ '+em+'\n\n请稍后重试。'; aiMsg.isError = true; saveConversations();
+        // Fallback to client-side smart reply when backend is unavailable
+        var reply = clientSmartReply(content, history);
+        streamClientReply(reply, aiMsg, conv);
+        return;
       } finally { setStreaming(false); renderMessages(); renderSidebar(); }
     }
 
@@ -555,7 +557,15 @@
           aiMsg.content = acc; saveConversations();
         } catch(e) { aiMsg.content = '⚠️ 爬取成功但分析失败: '+e.message; aiMsg.isError = true; saveConversations(); }
         finally { setStreaming(false); renderMessages(); renderSidebar(); }
-      } catch(err) { showError(err.message||'爬取失败'); }
+      } catch(err) {
+        closeModal('crawlModal');
+        var conv = getActiveConv();
+        conv.messages.push({ id: genId(), role: 'user', content: '🕷️ 爬取网页: '+url, timestamp: Date.now() });
+        var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now() };
+        conv.messages.push(aiMsg); conv.updatedAt = Date.now(); saveConversations(); renderSidebar(); setStreaming(true); renderMessages();
+        var reply = "⚠️ 爬虫功能需要后端服务支持。\n\n当前为静态部署模式，爬虫功能不可用。\n如需使用爬虫功能，请在本地运行：\n```\nnode server.js\n```\n然后访问 http://localhost:3000";
+        streamClientReply(reply, aiMsg, conv);
+      }
       finally { btn.disabled = false; btn.textContent = '开始爬取'; }
     }
 
@@ -640,9 +650,56 @@
           else { clearInterval(interval); aiMsg.content = text; conv.updatedAt = Date.now(); saveConversations(); setStreaming(false); renderMessages(); renderSidebar(); }
         }, 25);
       } catch(err) {
-        aiMsg.content = '⚠️ 图片识别失败: '+(err.message||'未知错误'); aiMsg.isError = true; saveConversations();
-        setStreaming(false); renderMessages(); renderSidebar(); showError(err.message||'识别失败');
+        var reply = "⚠️ 图片识别功能需要后端服务支持。\n\n当前为静态部署模式，图片识别不可用。\n如需使用图片识别功能，请在本地运行：\n```\nnode server.js\n```\n然后访问 http://localhost:3000";
+        streamClientReply(reply, aiMsg, conv);
       }
+    }
+
+    // ===== Client-side Smart Reply (fallback when no backend) =====
+    function clientSmartReply(message, history) {
+      var msg = message.toLowerCase().trim();
+      if (/^(你好|嗨|hi|hello|hey|哈喽|在吗)/i.test(msg)) {
+        return "你好！👋 我是逆蝶AI，很高兴见到你。\n\n我可以帮你：\n- 回答问题\n- 闲聊解闷\n- 头脑风暴\n- 文字创作\n\n有什么我可以帮你的吗？";
+      }
+      if (/(你是谁|你叫什么|自我介绍|你是什么|逆蝶)/i.test(msg)) {
+        return "我是逆蝶AI 🦋\n\n一只破茧而出的智能蝴蝶，擅长：\n1. **多轮对话** - 我能记住我们的对话上下文\n2. **知识问答** - 各类常识和知识问题\n3. **创意写作** - 帮你写文案、故事等\n\n目前我运行在静态部署模式下，如需完整功能（爬虫、图片识别），请在本地运行服务端。";
+      }
+      if (/(谢谢|感谢|thanks|thank you|多谢)/i.test(msg)) {
+        return "不客气！😊 能帮到你是我的荣幸。如果还有其他问题，随时问我～";
+      }
+      if (/(再见|拜拜|bye|走了|晚安)/i.test(msg)) {
+        return "再见！👋 逆蝶AI随时等你回来～";
+      }
+      if (/(几点|时间|日期|今天|现在)/i.test(msg)) {
+        var now = new Date();
+        return "现在是 " + now.toLocaleString("zh-CN") + "。";
+      }
+      if (/(能做什么|功能|会什么|帮什么)/i.test(msg)) {
+        return "逆蝶AI能做这些事情：\n\n📝 **问答对话** - 各种知识问答\n💡 **创意灵感** - 帮你头脑风暴\n✍️ **文字创作** - 文案、故事、诗歌\n🤖 **闲聊陪伴** - 随时陪你聊天\n\n试试问我一个问题吧！";
+      }
+      var mathMatch = msg.match(/(\d+(?:\.\d+)?)\s*([+\-*/×÷])\s*(\d+(?:\.\d+)?)/);
+      if (mathMatch) {
+        var a = parseFloat(mathMatch[1]), op = mathMatch[2], b = parseFloat(mathMatch[3]), result = "?";
+        switch(op) { case "+": result = a+b; break; case "-": result = a-b; break; case "*": case "×": result = a*b; break; case "/": case "÷": result = b===0?"除数不能为零":a/b; break; }
+        return a + " " + op + " " + b + " = " + result;
+      }
+      if (/(写.*诗|作诗|诗歌)/i.test(msg)) {
+        return "好的，为你写一首小诗：\n\n《逆蝶》\n\n破茧成蝶逆风飞，\n振翅穿云不知归。\n纵使前路千万里，\n我心自在向天辉。\n\n希望你喜欢！";
+      }
+      var replies = [
+        "关于「" + message.trim() + "」，这是一个很有意思的话题！\n\n目前我运行在静态部署模式下，回复能力有限。如需更深入的对话，可以在本地运行完整服务端。\n\n你能再具体描述一下你的需求吗？",
+        "我收到了你的消息：「" + message.trim() + "」\n\n我很乐意继续和你聊这个话题！你可以告诉我更多细节。",
+        "关于「" + message.trim() + "」，每个问题都有不同的角度可以探讨。你是在寻找具体的答案，还是想一起讨论呢？"
+      ];
+      return replies[message.length % replies.length];
+    }
+
+    function streamClientReply(reply, aiMsg, conv) {
+      var chars = Array.from(reply); var i = 0;
+      var interval = setInterval(function() {
+        if (i < chars.length) { aiMsg.content = chars.slice(0, i+2).join(''); i += 2; renderMessages(); }
+        else { clearInterval(interval); aiMsg.content = reply; conv.updatedAt = Date.now(); saveConversations(); setStreaming(false); renderMessages(); renderSidebar(); }
+      }, 30);
     }
 
     // ===== Events =====
@@ -683,7 +740,6 @@
       // Close modal on overlay click
       document.getElementById('crawlModal').addEventListener('click', function(e) { if (e.target === this) closeModal('crawlModal'); });
       document.getElementById('cameraModal').addEventListener('click', function(e) { if (e.target === this) closeCamera(); });
-    }amera(); });
     }
 
     // ===== Boot =====

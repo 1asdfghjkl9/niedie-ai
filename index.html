@@ -7,18 +7,25 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg-primary: #0f0f14;
-      --bg-secondary: #1a1a24;
-      --bg-tertiary: #252533;
-      --accent: #6c5ce7;
+      --bg-primary: #0a0a12;
+      --bg-secondary: #15151f;
+      --bg-tertiary: #1e1e2e;
+      --bg-hover: #252535;
+      --accent: #7c5ce7;
       --accent-light: #a29bfe;
+      --accent-glow: rgba(124, 92, 231, 0.15);
       --text-primary: #e8e8f0;
       --text-secondary: #9999aa;
-      --text-muted: #666677;
+      --text-muted: #5a5a6a;
       --border-color: #2a2a3a;
       --red: #ef4444;
       --blue: #3b82f6;
       --green: #22c55e;
+      --gold: #fbbf24;
+      --orange: #f97316;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
     }
     html, body {
       height: 100%;
@@ -28,72 +35,103 @@
       overflow: hidden;
       -webkit-font-smoothing: antialiased;
     }
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #3a3a4a; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #4a4a5a; }
-    ::selection { background: rgba(108, 92, 231, 0.3); }
+    ::selection { background: rgba(124, 92, 231, 0.3); }
 
     .app { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
 
     /* ===== Sidebar ===== */
     .sidebar {
-      width: 260px; height: 100%; background: var(--bg-secondary);
+      width: 250px; height: 100%; background: var(--bg-secondary);
       border-right: 1px solid var(--border-color);
       display: flex; flex-direction: column; flex-shrink: 0;
       transition: transform 0.3s ease; z-index: 40;
     }
-    .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border-color); }
-    .logo { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+    .sidebar-header { padding: 14px 16px; border-bottom: 1px solid var(--border-color); }
+    .logo { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
     .logo-icon {
-      width: 36px; height: 36px; border-radius: 10px;
+      width: 34px; height: 34px; border-radius: 10px;
       background: linear-gradient(135deg, var(--accent), var(--accent-light));
       display: flex; align-items: center; justify-content: center;
       color: white; font-weight: bold; font-size: 16px;
+      box-shadow: 0 2px 12px var(--accent-glow);
     }
-    .logo-text { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+    .logo-text { font-size: 15px; font-weight: 600; }
+    .credits-bar {
+      background: var(--bg-tertiary); border-radius: var(--radius-md);
+      padding: 10px 12px; margin-bottom: 12px;
+    }
+    .credits-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .credits-label { font-size: 11px; color: var(--text-muted); }
+    .credits-value { font-size: 14px; font-weight: 600; color: var(--gold); }
+    .credits-progress { height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden; }
+    .credits-fill {
+      height: 100%; border-radius: 2px;
+      background: linear-gradient(90deg, var(--gold), var(--orange));
+      transition: width 0.5s ease;
+    }
+    .credits-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .credits-btn {
+      flex: 1; padding: 6px 8px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-color); background: var(--bg-primary);
+      color: var(--text-secondary); font-size: 11px; cursor: pointer;
+      transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 4px;
+    }
+    .credits-btn:hover { border-color: var(--accent); color: var(--accent-light); }
+    .credits-btn.checkin-done { opacity: 0.5; cursor: default; }
     .btn-new {
-      width: 100%; padding: 10px 16px; border-radius: 10px; border: none;
+      width: 100%; padding: 10px 16px; border-radius: var(--radius-md); border: none;
       background: linear-gradient(135deg, var(--accent), var(--accent-light));
       color: white; font-size: 14px; font-weight: 500; cursor: pointer;
       display: flex; align-items: center; justify-content: center; gap: 8px;
-      transition: opacity 0.2s;
+      transition: opacity 0.2s, transform 0.1s;
     }
     .btn-new:hover { opacity: 0.9; }
+    .btn-new:active { transform: scale(0.98); }
     .btn-new svg { width: 16px; height: 16px; }
-    .conv-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .conv-list { flex: 1; overflow-y: auto; padding: 6px; }
     .conv-empty { text-align: center; color: var(--text-muted); font-size: 12px; padding: 32px 0; }
     .conv-item {
-      display: flex; align-items: center; gap: 8px; padding: 10px 12px;
-      border-radius: 8px; cursor: pointer; transition: background 0.2s;
+      display: flex; align-items: center; gap: 8px; padding: 9px 10px;
+      border-radius: var(--radius-sm); cursor: pointer; transition: background 0.2s;
       margin-bottom: 2px; position: relative;
     }
-    .conv-item:hover { background: rgba(37, 37, 51, 0.5); }
+    .conv-item:hover { background: var(--bg-hover); }
     .conv-item.active { background: var(--bg-tertiary); }
-    .conv-item svg { width: 14px; height: 14px; opacity: 0.6; flex-shrink: 0; }
+    .conv-item svg { width: 14px; height: 14px; opacity: 0.5; flex-shrink: 0; }
     .conv-item span { flex: 1; font-size: 13px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .conv-item.active span { color: var(--text-primary); }
     .conv-delete {
-      opacity: 0; width: 24px; height: 24px; border: none; background: transparent;
+      opacity: 0; width: 22px; height: 22px; border: none; background: transparent;
       cursor: pointer; display: flex; align-items: center; justify-content: center;
       border-radius: 4px; flex-shrink: 0; color: var(--text-muted);
     }
     .conv-item:hover .conv-delete { opacity: 1; }
     .conv-delete:hover { color: var(--red); }
-    .conv-delete svg { width: 14px; height: 14px; opacity: 1; }
-    .sidebar-footer { padding: 12px; border-top: 1px solid var(--border-color); text-align: center; font-size: 11px; color: var(--text-muted); }
+    .conv-delete svg { width: 13px; height: 13px; opacity: 1; }
+    .sidebar-footer { padding: 10px 12px; border-top: 1px solid var(--border-color); text-align: center; font-size: 10px; color: var(--text-muted); }
 
     /* ===== Main ===== */
     .main { flex: 1; display: flex; flex-direction: column; height: 100%; min-width: 0; }
     .header {
       flex-shrink: 0; display: flex; align-items: center; gap: 12px;
-      padding: 12px 16px; border-bottom: 1px solid var(--border-color);
+      padding: 10px 16px; border-bottom: 1px solid var(--border-color);
       background: var(--bg-secondary);
     }
     .menu-btn { display: none; padding: 6px; border: none; background: transparent; cursor: pointer; border-radius: 6px; color: var(--text-secondary); }
     .menu-btn:hover { background: var(--bg-tertiary); }
     .menu-btn svg { width: 20px; height: 20px; }
-    .header-title { flex: 1; font-size: 14px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .header-title { flex: 1; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .header-credits {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: 20px;
+      background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.2);
+      font-size: 13px; font-weight: 600; color: var(--gold);
+    }
+    .header-credits svg { width: 14px; height: 14px; }
     .status-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent-light); }
     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-light); animation: pulse 1.5s infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -105,126 +143,131 @@
     .error-bar button { background: transparent; border: none; color: #fca5a5; cursor: pointer; font-size: 14px; }
 
     /* ===== Messages ===== */
-    .messages { flex: 1; overflow-y: auto; padding: 24px 16px; }
-    .messages-inner { max-width: 768px; margin: 0 auto; }
+    .messages { flex: 1; overflow-y: auto; padding: 20px 16px; }
+    .messages-inner { max-width: 760px; margin: 0 auto; }
     .empty-state {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       height: 100%; text-align: center; max-width: 480px; margin: 0 auto;
       animation: fadeIn 0.4s ease;
     }
     .empty-icon {
-      width: 80px; height: 80px; margin-bottom: 24px; border-radius: 16px;
+      width: 72px; height: 72px; margin-bottom: 20px; border-radius: 18px;
       background: linear-gradient(135deg, var(--accent), var(--accent-light));
       display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 32px; font-weight: bold;
+      color: white; font-size: 30px; font-weight: bold;
+      box-shadow: 0 4px 20px var(--accent-glow);
     }
     .empty-title {
-      font-size: 24px; font-weight: bold; margin-bottom: 12px;
+      font-size: 22px; font-weight: bold; margin-bottom: 10px;
       background: linear-gradient(135deg, var(--accent-light), var(--accent));
       -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
-    .empty-desc { font-size: 14px; color: var(--text-secondary); margin-bottom: 32px; }
-    .empty-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; }
+    .empty-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 28px; }
+    .empty-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; }
     .empty-card {
-      padding: 16px; border-radius: 12px; background: var(--bg-secondary);
-      border: 1px solid var(--border-color); transition: border-color 0.2s; cursor: pointer;
+      padding: 14px; border-radius: var(--radius-md); background: var(--bg-secondary);
+      border: 1px solid var(--border-color); transition: all 0.2s; cursor: pointer;
     }
-    .empty-card:hover { border-color: rgba(108, 92, 231, 0.5); }
-    .empty-card-icon { font-size: 24px; margin-bottom: 8px; }
-    .empty-card-title { font-size: 14px; font-weight: 500; color: var(--text-primary); }
-    .empty-card-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .empty-card:hover { border-color: rgba(124, 92, 231, 0.5); background: var(--bg-tertiary); }
+    .empty-card-icon { font-size: 22px; margin-bottom: 6px; }
+    .empty-card-title { font-size: 13px; font-weight: 500; }
+    .empty-card-desc { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 
-    .msg-row { display: flex; gap: 12px; margin-bottom: 24px; animation: slideUp 0.3s ease; }
+    .msg-row { display: flex; gap: 10px; margin-bottom: 20px; animation: slideUp 0.3s ease; }
     .msg-row.user { flex-direction: row-reverse; }
     .msg-avatar {
-      flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px;
+      flex-shrink: 0; width: 30px; height: 30px; border-radius: var(--radius-sm);
       display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 12px; font-weight: bold;
+      color: white; font-size: 11px; font-weight: bold;
     }
     .msg-avatar.user { background: var(--blue); }
     .msg-avatar.ai { background: linear-gradient(135deg, var(--accent), var(--accent-light)); }
-    .msg-content-wrapper { display: flex; flex-direction: column; gap: 4px; max-width: 75%; }
+    .msg-content-wrapper { display: flex; flex-direction: column; gap: 3px; max-width: 75%; }
     .msg-row.user .msg-content-wrapper { align-items: flex-end; }
     .msg-bubble {
-      padding: 12px 16px; border-radius: 16px; font-size: 14px; line-height: 1.6;
+      padding: 11px 15px; border-radius: var(--radius-lg); font-size: 14px; line-height: 1.6;
       white-space: pre-wrap; word-break: break-word;
     }
     .msg-row.user .msg-bubble { background: var(--blue); color: white; border-top-right-radius: 4px; }
     .msg-row.ai .msg-bubble { background: var(--bg-secondary); color: var(--text-primary); border-top-left-radius: 4px; }
     .msg-bubble.error { background: rgba(239, 68, 68, 0.1) !important; color: #fca5a5 !important; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .msg-time { font-size: 11px; color: var(--text-muted); padding: 0 8px; }
-    .msg-image { max-width: 200px; max-height: 200px; border-radius: 8px; margin-top: 4px; }
-    .typing-indicator { display: flex; gap: 12px; margin-bottom: 24px; animation: fadeIn 0.3s ease; }
+    .msg-bubble code { background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: 'Fira Code', monospace; }
+    .msg-bubble strong { font-weight: 600; color: var(--accent-light); }
+    .msg-time { font-size: 10px; color: var(--text-muted); padding: 0 6px; }
+    .msg-cost { font-size: 10px; color: var(--gold); padding: 0 6px; opacity: 0.7; }
+    .msg-image { max-width: 200px; max-height: 200px; border-radius: var(--radius-md); margin-top: 4px; }
+    .typing-indicator { display: flex; gap: 10px; margin-bottom: 20px; animation: fadeIn 0.3s ease; }
     .typing-dots {
-      display: flex; align-items: center; gap: 6px; padding: 16px;
-      border-radius: 16px; border-top-left-radius: 4px; background: var(--bg-secondary);
+      display: flex; align-items: center; gap: 5px; padding: 14px;
+      border-radius: var(--radius-lg); border-top-left-radius: 4px; background: var(--bg-secondary);
     }
-    .typing-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-light); animation: bounce 1.4s infinite ease-in-out; }
+    .typing-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-light); animation: bounce 1.4s infinite ease-in-out; }
     .typing-dot:nth-child(2) { animation-delay: 0.2s; }
     .typing-dot:nth-child(3) { animation-delay: 0.4s; }
     @keyframes bounce { 0%, 80%, 100% { transform: scale(0); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
     /* ===== Input ===== */
-    .input-area { flex-shrink: 0; padding: 16px; border-top: 1px solid var(--border-color); background: var(--bg-primary); }
+    .input-area { flex-shrink: 0; padding: 12px 16px; border-top: 1px solid var(--border-color); background: var(--bg-primary); }
     .input-wrapper {
-      max-width: 768px; margin: 0 auto;
-      display: flex; align-items: flex-end; gap: 8px;
-      background: var(--bg-secondary); border-radius: 16px;
-      border: 1px solid var(--border-color); padding: 8px 12px;
+      max-width: 760px; margin: 0 auto;
+      display: flex; align-items: flex-end; gap: 6px;
+      background: var(--bg-secondary); border-radius: var(--radius-lg);
+      border: 1px solid var(--border-color); padding: 6px 10px;
       transition: border-color 0.2s;
     }
-    .input-wrapper:focus-within { border-color: rgba(108, 92, 231, 0.5); }
+    .input-wrapper:focus-within { border-color: rgba(124, 92, 231, 0.5); box-shadow: 0 0 0 2px var(--accent-glow); }
     .tool-btn {
-      flex-shrink: 0; width: 36px; height: 36px; border-radius: 10px; border: none;
+      flex-shrink: 0; width: 34px; height: 34px; border-radius: var(--radius-sm); border: none;
       background: transparent; color: var(--text-secondary); cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      transition: background 0.2s, color 0.2s;
+      transition: all 0.2s;
     }
     .tool-btn:hover { background: var(--bg-tertiary); color: var(--accent-light); }
-    .tool-btn svg { width: 20px; height: 20px; }
+    .tool-btn svg { width: 19px; height: 19px; }
     .input textarea {
       flex: 1; background: transparent; border: none; outline: none;
       color: var(--text-primary); font-size: 14px; font-family: inherit;
-      resize: none; max-height: 160px; min-height: 24px; line-height: 1.5;
+      resize: none; max-height: 150px; min-height: 22px; line-height: 1.5;
     }
     .input textarea::placeholder { color: var(--text-muted); }
     .input textarea:disabled { opacity: 0.5; }
     .send-btn {
-      flex-shrink: 0; width: 36px; height: 36px; border-radius: 10px; border: none;
+      flex-shrink: 0; width: 34px; height: 34px; border-radius: var(--radius-sm); border: none;
       background: linear-gradient(135deg, var(--accent), var(--accent-light));
       color: white; cursor: pointer; display: flex; align-items: center; justify-content: center;
-      transition: opacity 0.2s;
+      transition: opacity 0.2s, transform 0.1s;
     }
     .send-btn:disabled { opacity: 0.3; cursor: not-allowed; background: var(--bg-tertiary); }
     .send-btn:not(:disabled):hover { opacity: 0.9; }
-    .send-btn svg { width: 18px; height: 18px; }
-    .input-hint { text-align: center; font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    .send-btn:not(:disabled):active { transform: scale(0.95); }
+    .send-btn svg { width: 17px; height: 17px; }
+    .input-hint { text-align: center; font-size: 10px; color: var(--text-muted); margin-top: 6px; }
 
     /* ===== Modal ===== */
     .modal-overlay {
       display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
       z-index: 100; align-items: center; justify-content: center;
-      animation: fadeIn 0.2s ease;
+      animation: fadeIn 0.2s ease; backdrop-filter: blur(4px);
     }
     .modal-overlay.show { display: flex; }
     .modal {
-      background: var(--bg-secondary); border-radius: 16px; padding: 24px;
-      max-width: 90vw; width: 420px; border: 1px solid var(--border-color);
+      background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 22px;
+      max-width: 90vw; width: 400px; border: 1px solid var(--border-color);
       animation: slideUp 0.3s ease;
     }
-    .modal-title { font-size: 18px; font-weight: 600; margin-bottom: 16px; color: var(--text-primary); }
-    .modal-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+    .modal-title { font-size: 17px; font-weight: 600; margin-bottom: 14px; }
+    .modal-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; }
     .modal-input {
-      width: 100%; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--border-color);
+      width: 100%; padding: 11px 14px; border-radius: var(--radius-md); border: 1px solid var(--border-color);
       background: var(--bg-primary); color: var(--text-primary); font-size: 14px; outline: none;
       transition: border-color 0.2s;
     }
     .modal-input:focus { border-color: var(--accent); }
-    .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
     .modal-btn {
-      padding: 10px 20px; border-radius: 10px; border: none; font-size: 14px; cursor: pointer;
+      padding: 9px 18px; border-radius: var(--radius-md); border: none; font-size: 14px; cursor: pointer;
       font-weight: 500; transition: opacity 0.2s;
     }
     .modal-btn.cancel { background: var(--bg-tertiary); color: var(--text-secondary); }
@@ -237,31 +280,42 @@
     .modal-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
     /* ===== Camera ===== */
-    .camera-container { position: relative; margin-bottom: 16px; border-radius: 12px; overflow: hidden; background: #000; }
-    .camera-video { width: 100%; display: block; max-height: 300px; object-fit: cover; }
+    .camera-container { position: relative; margin-bottom: 14px; border-radius: var(--radius-md); overflow: hidden; background: #000; }
+    .camera-video { width: 100%; display: block; max-height: 280px; object-fit: cover; }
     .camera-canvas { display: none; }
-    .camera-preview { width: 100%; max-height: 300px; border-radius: 12px; display: none; }
-    .camera-tools { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+    .camera-preview { width: 100%; max-height: 280px; border-radius: var(--radius-md); display: none; }
+    .camera-tools { display: flex; gap: 6px; justify-content: center; margin-top: 10px; }
     .camera-tool-btn {
-      padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border-color);
-      background: var(--bg-tertiary); color: var(--text-primary); font-size: 13px; cursor: pointer;
-      transition: background 0.2s;
+      padding: 7px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);
+      background: var(--bg-tertiary); color: var(--text-primary); font-size: 12px; cursor: pointer;
+      transition: all 0.2s;
     }
-    .camera-tool-btn:hover { background: var(--accent); }
+    .camera-tool-btn:hover { background: var(--accent); border-color: var(--accent); }
     .camera-tool-btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent-light)); border: none; color: white; }
     .file-input { display: none; }
+
+    /* ===== Credits Modal ===== */
+    .credits-modal-body { font-size: 14px; }
+    .credits-modal-body .credit-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0; border-bottom: 1px solid var(--border-color);
+    }
+    .credits-modal-body .credit-row:last-child { border-bottom: none; }
+    .credits-modal-body .credit-label { color: var(--text-secondary); font-size: 13px; }
+    .credits-modal-body .credit-cost { font-weight: 600; color: var(--gold); font-size: 13px; }
 
     /* ===== Overlay (mobile) ===== */
     .overlay { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 30; }
 
     @media (max-width: 768px) {
-      .sidebar { position: fixed; left: 0; top: 0; transform: translateX(-100%); }
+      .sidebar { position: fixed; left: 0; top: 0; transform: translateX(-100%); width: 280px; }
       .sidebar.open { transform: translateX(0); }
       .menu-btn { display: flex; align-items: center; justify-content: center; }
       .overlay.show { display: block; }
       .empty-grid { grid-template-columns: 1fr; }
       .msg-content-wrapper { max-width: 85%; }
-      .modal { width: 92vw; padding: 20px; }
+      .modal { width: 92vw; padding: 18px; }
+      .header-credits { padding: 4px 10px; font-size: 12px; }
     }
   </style>
 </head>
@@ -276,13 +330,26 @@
           <div class="logo-icon">🦋</div>
           <span class="logo-text">逆蝶AI</span>
         </div>
+        <div class="credits-bar">
+          <div class="credits-row">
+            <span class="credits-label">可用积分</span>
+            <span class="credits-value" id="sidebarCredits">0</span>
+          </div>
+          <div class="credits-progress">
+            <div class="credits-fill" id="creditsFill" style="width:0%"></div>
+          </div>
+          <div class="credits-actions">
+            <button class="credits-btn" id="checkinBtn" onclick="dailyCheckin()">📅 签到</button>
+            <button class="credits-btn" onclick="openCreditsModal()">📊 详情</button>
+          </div>
+        </div>
         <button class="btn-new" id="btnNew">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
           新建对话
         </button>
       </div>
       <div class="conv-list" id="convList"><div class="conv-empty">暂无对话记录</div></div>
-      <div class="sidebar-footer">逆蝶AI v2.0 · 对话 · 爬虫 · 识图</div>
+      <div class="sidebar-footer">逆蝶AI v3.0 · 对话 · 爬虫 · 识图 · 积分</div>
     </aside>
 
     <!-- Main -->
@@ -290,6 +357,10 @@
       <header class="header">
         <button class="menu-btn" id="menuBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18" stroke-linecap="round"/></svg></button>
         <h1 class="header-title" id="headerTitle">逆蝶AI</h1>
+        <div class="header-credits" onclick="openCreditsModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M9 9h4.5a2 2 0 0 1 0 4H9m0 4h4.5" stroke-linecap="round"/></svg>
+          <span id="headerCredits">0</span>
+        </div>
         <div class="status-badge" id="statusBadge" style="display:none"><span class="status-dot"></span>回复中</div>
       </header>
 
@@ -311,7 +382,7 @@
           <div class="input" style="flex:1;"><textarea id="input" placeholder="输入消息，回车发送，Shift+回车换行" rows="1"></textarea></div>
           <button class="send-btn" id="sendBtn" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
-        <p class="input-hint">逆蝶AI 生成内容仅供参考，请注意甄别</p>
+        <p class="input-hint">逆蝶AI 生成内容仅供参考 · 每次对话消耗积分</p>
       </div>
     </main>
   </div>
@@ -320,7 +391,7 @@
   <div class="modal-overlay" id="crawlModal">
     <div class="modal">
       <h2 class="modal-title">🕷️ 网页爬虫</h2>
-      <p class="modal-desc">输入网页地址，逆蝶AI将抓取网页内容并为你分析。</p>
+      <p class="modal-desc">输入网页地址，逆蝶AI将抓取网页内容并为你分析。（消耗 50 积分）</p>
       <input type="text" class="modal-input" id="crawlUrlInput" placeholder="https://example.com" />
       <div class="modal-actions">
         <button class="modal-btn cancel" onclick="closeModal('crawlModal')">取消</button>
@@ -333,7 +404,7 @@
   <div class="modal-overlay" id="cameraModal">
     <div class="modal">
       <h2 class="modal-title">📷 图片识别</h2>
-      <p class="modal-desc">拍照或上传图片，逆蝶AI将为你识别图片内容。</p>
+      <p class="modal-desc">拍照或上传图片，逆蝶AI将为你识别图片内容。（消耗 100 积分）</p>
       <div class="camera-container" id="cameraContainer">
         <video class="camera-video" id="cameraVideo" autoplay playsinline></video>
         <canvas class="camera-canvas" id="cameraCanvas"></canvas>
@@ -345,61 +416,157 @@
         <button class="camera-tool-btn" onclick="document.getElementById('fileInput').click()">📁 上传</button>
         <input type="file" class="file-input" id="fileInput" accept="image/*" />
       </div>
-      <div class="modal-actions" style="margin-top:12px;">
+      <div class="modal-actions" style="margin-top:10px;">
         <button class="modal-btn cancel" onclick="closeCamera()">取消</button>
         <button class="modal-btn confirm" id="visionConfirmBtn" onclick="executeVision()" disabled>识别图片</button>
       </div>
     </div>
   </div>
 
+  <!-- Credits Info Modal -->
+  <div class="modal-overlay" id="creditsModal">
+    <div class="modal">
+      <h2 class="modal-title">📊 积分系统</h2>
+      <p class="modal-desc" id="creditsModalDesc">您的积分余额</p>
+      <div class="credits-modal-body">
+        <div class="credit-row"><span class="credit-label">💬 每次对话</span><span class="credit-cost">-10 积分</span></div>
+        <div class="credit-row"><span class="credit-label">🕷️ 网页爬虫</span><span class="credit-cost">-50 积分</span></div>
+        <div class="credit-row"><span class="credit-label">📷 图片识别</span><span class="credit-cost">-100 积分</span></div>
+        <div class="credit-row"><span class="credit-label">📅 每日签到</span><span class="credit-cost">+200 积分</span></div>
+        <div class="credit-row"><span class="credit-label">🎁 新用户赠送</span><span class="credit-cost">+1000 积分</span></div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn confirm" onclick="closeModal('creditsModal')">知道了</button>
+      </div>
+    </div>
+  </div>
+
   <script>
+    // ===================================================
+    //  逆蝶AI v3.0 — 积分系统 + 智能知识库
+    // ===================================================
+
+    // ===== 积分配置 =====
+    var CREDITS_CONFIG = {
+      initial: 1000,
+      dailyCheckin: 200,
+      chatCost: 10,
+      crawlCost: 50,
+      visionCost: 100,
+      maxCredits: 5000,
+    };
+    var CREDITS_KEY = 'niedie-ai-credits';
+    var CHECKIN_KEY = 'niedie-ai-last-checkin';
+
+    // ===== 积分管理 =====
+    function loadCredits() {
+      var c = parseInt(localStorage.getItem(CREDITS_KEY));
+      if (isNaN(c) || c < 0) { c = CREDITS_CONFIG.initial; localStorage.setItem(CREDITS_KEY, c); }
+      return c;
+    }
+    function saveCredits(v) {
+      v = Math.max(0, Math.min(v, CREDITS_CONFIG.maxCredits));
+      localStorage.setItem(CREDITS_KEY, v);
+      updateCreditsDisplay();
+    }
+    function spendCredits(amount) {
+      var cur = loadCredits();
+      if (cur < amount) return false;
+      saveCredits(cur - amount);
+      return true;
+    }
+    function updateCreditsDisplay() {
+      var c = loadCredits();
+      var pct = Math.min(100, (c / CREDITS_CONFIG.maxCredits) * 100);
+      document.getElementById('headerCredits').textContent = c;
+      document.getElementById('sidebarCredits').textContent = c;
+      document.getElementById('creditsFill').style.width = pct + '%';
+      document.getElementById('creditsModalDesc').textContent = '当前余额：' + c + ' 积分';
+    }
+    function dailyCheckin() {
+      var today = new Date().toDateString();
+      var last = localStorage.getItem(CHECKIN_KEY);
+      if (last === today) {
+        var btn = document.getElementById('checkinBtn');
+        btn.classList.add('checkin-done');
+        btn.textContent = '✅ 已签到';
+        return;
+      }
+      localStorage.setItem(CHECKIN_KEY, today);
+      var cur = loadCredits();
+      saveCredits(cur + CREDITS_CONFIG.dailyCheckin);
+      var btn = document.getElementById('checkinBtn');
+      btn.classList.add('checkin-done');
+      btn.textContent = '✅ 已签到';
+      showCreditsToast('签到成功！+' + CREDITS_CONFIG.dailyCheckin + ' 积分 🎉');
+    }
+    function checkCheckinStatus() {
+      var today = new Date().toDateString();
+      var last = localStorage.getItem(CHECKIN_KEY);
+      if (last === today) {
+        var btn = document.getElementById('checkinBtn');
+        btn.classList.add('checkin-done');
+        btn.textContent = '✅ 已签到';
+      }
+    }
+    function showCreditsToast(msg) {
+      var toast = document.createElement('div');
+      toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--bg-tertiary);color:var(--gold);padding:10px 24px;border-radius:12px;font-size:14px;font-weight:600;z-index:200;border:1px solid rgba(251,191,36,0.3);box-shadow:0 4px 20px rgba(0,0,0,0.3);animation:fadeIn 0.3s ease;';
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(function() { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.5s'; setTimeout(function(){ toast.remove(); }, 500); }, 2500);
+    }
+    function openCreditsModal() { updateCreditsDisplay(); document.getElementById('creditsModal').classList.add('show'); }
+
     // ===== State =====
-    let conversations = [];
-    let activeId = null;
-    let isStreaming = false;
-    let capturedImage = null;  // base64 data URL
-    let cameraStream = null;
-    let cameraFacing = 'environment';
+    var conversations = [];
+    var activeId = null;
+    var isStreaming = false;
+    var capturedImage = null;
+    var cameraStream = null;
+    var cameraFacing = 'environment';
 
     // ===== DOM =====
-    const sidebar = document.getElementById('sidebar');
-    const overlay = document.getElementById('overlay');
-    const menuBtn = document.getElementById('menuBtn');
-    const btnNew = document.getElementById('btnNew');
-    const convList = document.getElementById('convList');
-    const headerTitle = document.getElementById('headerTitle');
-    const statusBadge = document.getElementById('statusBadge');
-    const errorBar = document.getElementById('errorBar');
-    const errorText = document.getElementById('errorText');
-    const messages = document.getElementById('messages');
-    const messagesInner = document.getElementById('messagesInner');
-    const input = document.getElementById('input');
-    const sendBtn = document.getElementById('sendBtn');
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('overlay');
+    var menuBtn = document.getElementById('menuBtn');
+    var btnNew = document.getElementById('btnNew');
+    var convList = document.getElementById('convList');
+    var headerTitle = document.getElementById('headerTitle');
+    var statusBadge = document.getElementById('statusBadge');
+    var errorBar = document.getElementById('errorBar');
+    var errorText = document.getElementById('errorText');
+    var messages = document.getElementById('messages');
+    var messagesInner = document.getElementById('messagesInner');
+    var input = document.getElementById('input');
+    var sendBtn = document.getElementById('sendBtn');
 
     // ===== Utils =====
     function genId() { return Date.now() + '-' + Math.random().toString(36).slice(2, 11); }
-    function escapeHtml(text) { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
-    function formatTime(ts) { const d = new Date(ts); return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0'); }
-    function generateTitle(content) { const t = content.trim(); return t.length <= 20 ? t : t.slice(0,20) + '...'; }
+    function escapeHtml(text) { var div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
+    function formatTime(ts) { var d = new Date(ts); return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0'); }
+    function generateTitle(content) { var t = content.trim(); return t.length <= 20 ? t : t.slice(0,20) + '...'; }
 
     // ===== Storage =====
-    const STORAGE_KEY = 'niedie-ai-conversations';
+    var STORAGE_KEY = 'niedie-ai-conversations';
     function loadConversations() {
-      try { const data = localStorage.getItem(STORAGE_KEY); if (!data) return []; const p = JSON.parse(data); return Array.isArray(p) ? p : []; } catch { return []; }
+      try { var data = localStorage.getItem(STORAGE_KEY); if (!data) return []; var p = JSON.parse(data); return Array.isArray(p) ? p : []; } catch { return []; }
     }
-    function saveConversations() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations)); } catch(e) { console.error('Save failed:', e); } }
+    function saveConversations() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations)); } catch(e) {} }
 
     // ===== Init =====
     function init() {
+      loadCredits();
+      checkCheckinStatus();
       conversations = loadConversations();
-      // Migrate old key
       if (conversations.length === 0) {
         try {
-          const old = localStorage.getItem('ai-chat-conversations');
+          var old = localStorage.getItem('ai-chat-conversations');
           if (old) { conversations = JSON.parse(old); saveConversations(); localStorage.removeItem('ai-chat-conversations'); }
         } catch {}
       }
       if (conversations.length > 0) activeId = conversations[0].id;
+      updateCreditsDisplay();
       renderSidebar(); renderMessages(); bindEvents();
     }
 
@@ -427,7 +594,7 @@
         messagesInner.innerHTML =
           '<div class="empty-state"><div class="empty-icon">🦋</div>' +
           '<h2 class="empty-title">逆蝶AI</h2>' +
-          '<p class="empty-desc">我是逆蝶AI，破茧而出的智能助手。支持对话、爬虫、图片识别</p>' +
+          '<p class="empty-desc">破茧而出的智能助手 · 对话 · 爬虫 · 识图</p>' +
           '<div class="empty-grid">' +
           '<div class="empty-card" data-suggestion="你好，介绍一下你自己"><div class="empty-card-icon">💡</div><div class="empty-card-title">知识问答</div><div class="empty-card-desc">问任何问题</div></div>' +
           '<div class="empty-card" data-suggestion="帮我写一首关于蝴蝶的诗"><div class="empty-card-icon">✍️</div><div class="empty-card-title">创意写作</div><div class="empty-card-desc">文案、故事、诗歌</div></div>' +
@@ -450,12 +617,13 @@
         var bubbleClass = isUser ? '' : (msg.isError ? 'error' : '');
         var imgHtml = '';
         if (isUser && msg.image) { imgHtml = '<img class="msg-image" src="'+msg.image+'" alt="用户上传" />'; }
+        var costHtml = (!isUser && msg.cost) ? '<span class="msg-cost">消耗 '+msg.cost+' 积分</span>' : '';
         return '<div class="msg-row'+(isUser?' user':'')+'">' +
           '<div class="msg-avatar'+(isUser?' user':' ai')+'">'+(isUser?'你':'🦋')+'</div>' +
           '<div class="msg-content-wrapper">' +
           (msg.content ? '<div class="msg-bubble'+(bubbleClass?' '+bubbleClass:'')+'">'+escapeHtml(msg.content)+'</div>' : '') +
           imgHtml +
-          '<span class="msg-time">'+formatTime(msg.timestamp)+'</span></div></div>';
+          '<div style="display:flex;align-items:center;gap:8px;"><span class="msg-time">'+formatTime(msg.timestamp)+'</span>'+costHtml+'</div></div></div>';
       }).join('');
       if (isStreaming) {
         html += '<div class="typing-indicator"><div class="msg-avatar ai">🦋</div><div class="typing-dots"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div></div>';
@@ -484,7 +652,6 @@
     }
     function openSidebar() { sidebar.classList.add('open'); overlay.classList.add('show'); }
     function closeSidebar() { sidebar.classList.remove('open'); overlay.classList.remove('show'); }
-
     function getActiveConv() {
       var conv = conversations.find(function(c){return c.id===activeId;});
       if (!conv) { conv = { id: genId(), title: '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now() }; conversations.unshift(conv); activeId = conv.id; }
@@ -494,12 +661,17 @@
     async function sendMessage() {
       var content = input.value.trim();
       if (!content || isStreaming) return;
+      // 积分检查
+      if (!spendCredits(CREDITS_CONFIG.chatCost)) {
+        showCreditsToast('积分不足！请明日签到获取更多积分 💰');
+        return;
+      }
       hideError();
       var conv = getActiveConv();
       conv.messages.push({ id: genId(), role: 'user', content: content, timestamp: Date.now() });
       if (conv.messages.length === 1) conv.title = generateTitle(content);
       conv.updatedAt = Date.now();
-      var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now() };
+      var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now(), cost: CREDITS_CONFIG.chatCost };
       conv.messages.push(aiMsg); conv.updatedAt = Date.now();
       saveConversations(); renderSidebar(); setStreaming(true); renderMessages();
       input.value = ''; input.style.height = 'auto';
@@ -513,7 +685,6 @@
         if (!acc.trim()) throw new Error('AI未返回有效内容');
         aiMsg.content = acc; conv.updatedAt = Date.now(); saveConversations();
       } catch(err) {
-        // Fallback to client-side smart reply when backend is unavailable
         var reply = clientSmartReply(content, history);
         streamClientReply(reply, aiMsg, conv);
         return;
@@ -521,12 +692,16 @@
     }
 
     // ===== Crawl =====
-    function openCrawlModal() { document.getElementById('crawlModal').classList.add('show'); document.getElementById('crawlUrlInput').focus(); }
+    function openCrawlModal() {
+      if (loadCredits() < CREDITS_CONFIG.crawlCost) { showCreditsToast('积分不足！爬虫需要 '+CREDITS_CONFIG.crawlCost+' 积分 💰'); return; }
+      document.getElementById('crawlModal').classList.add('show'); document.getElementById('crawlUrlInput').focus();
+    }
     function closeModal(id) { document.getElementById(id).classList.remove('show'); }
 
     async function executeCrawl() {
       var url = document.getElementById('crawlUrlInput').value.trim();
       if (!url) { showError('请输入网页地址'); return; }
+      if (!spendCredits(CREDITS_CONFIG.crawlCost)) { showCreditsToast('积分不足！💰'); return; }
       var btn = document.getElementById('crawlConfirmBtn');
       btn.disabled = true; btn.textContent = '爬取中...';
       try {
@@ -535,7 +710,6 @@
         if (!response.ok) throw new Error(data.error||'爬取失败');
         closeModal('crawlModal');
         document.getElementById('crawlUrlInput').value = '';
-        // Send crawl result as a message
         var conv = getActiveConv();
         var crawlText = '🕷️ 网页爬虫结果\n\n网址: '+data.url+'\n标题: '+data.title;
         if (data.description) crawlText += '\n描述: '+data.description;
@@ -545,7 +719,7 @@
         crawlText += '\n\n请分析以上网页内容，给出简要总结。';
         conv.messages.push({ id: genId(), role: 'user', content: '🕷️ 爬取网页: '+url, timestamp: Date.now() });
         if (conv.messages.length === 1) conv.title = generateTitle('爬虫: '+data.title);
-        var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now() };
+        var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now(), cost: CREDITS_CONFIG.crawlCost };
         conv.messages.push(aiMsg); conv.updatedAt = Date.now(); saveConversations(); renderSidebar(); setStreaming(true); renderMessages();
         var history = conv.messages.slice(0, -1).map(function(m){return {role:m.role, content:m.content};});
         try {
@@ -555,13 +729,15 @@
           while(true){ var r=await reader.read(); if(r.done)break; acc+=dec.decode(r.value,{stream:true}); aiMsg.content=acc; renderMessages(); }
           if(!acc.trim()) throw new Error('AI未返回内容');
           aiMsg.content = acc; saveConversations();
-        } catch(e) { aiMsg.content = '⚠️ 爬取成功但分析失败: '+e.message; aiMsg.isError = true; saveConversations(); }
-        finally { setStreaming(false); renderMessages(); renderSidebar(); }
+        } catch(e) {
+          var reply = clientSmartReply(crawlText, history);
+          streamClientReply(reply, aiMsg, conv);
+        }
       } catch(err) {
         closeModal('crawlModal');
         var conv = getActiveConv();
         conv.messages.push({ id: genId(), role: 'user', content: '🕷️ 爬取网页: '+url, timestamp: Date.now() });
-        var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now() };
+        var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now(), cost: CREDITS_CONFIG.crawlCost };
         conv.messages.push(aiMsg); conv.updatedAt = Date.now(); saveConversations(); renderSidebar(); setStreaming(true); renderMessages();
         var reply = "⚠️ 爬虫功能需要后端服务支持。\n\n当前为静态部署模式，爬虫功能不可用。\n如需使用爬虫功能，请在本地运行：\n```\nnode server.js\n```\n然后访问 http://localhost:3000";
         streamClientReply(reply, aiMsg, conv);
@@ -571,6 +747,7 @@
 
     // ===== Camera / Vision =====
     function openCameraModal() {
+      if (loadCredits() < CREDITS_CONFIG.visionCost) { showCreditsToast('积分不足！图片识别需要 '+CREDITS_CONFIG.visionCost+' 积分 💰'); return; }
       document.getElementById('cameraModal').classList.add('show');
       document.getElementById('cameraPreview').style.display = 'none';
       document.getElementById('cameraVideo').style.display = 'block';
@@ -579,29 +756,21 @@
       document.getElementById('visionConfirmBtn').disabled = true;
       startCamera();
     }
-
     async function startCamera() {
       try {
         if (cameraStream) { cameraStream.getTracks().forEach(function(t){t.stop();}); }
         cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: cameraFacing }, audio: false });
         document.getElementById('cameraVideo').srcObject = cameraStream;
       } catch(err) {
-        // Camera not available, show upload option only
         document.getElementById('cameraVideo').style.display = 'none';
         document.getElementById('captureBtn').style.display = 'none';
       }
     }
-
-    function switchCamera() {
-      cameraFacing = cameraFacing === 'environment' ? 'user' : 'environment';
-      startCamera();
-    }
-
+    function switchCamera() { cameraFacing = cameraFacing === 'environment' ? 'user' : 'environment'; startCamera(); }
     function capturePhoto() {
       var video = document.getElementById('cameraVideo');
       var canvas = document.getElementById('cameraCanvas');
       var captureBtn = document.getElementById('captureBtn');
-      // If already captured, restart camera for retake
       if (capturedImage && video.style.display === 'none') {
         capturedImage = null;
         document.getElementById('cameraPreview').style.display = 'none';
@@ -621,29 +790,24 @@
       captureBtn.textContent = '📸 重新拍';
       document.getElementById('visionConfirmBtn').disabled = false;
     }
-
-    // Handle file upload (moved to bindEvents)
-
-
     function closeCamera() {
       document.getElementById('cameraModal').classList.remove('show');
       if (cameraStream) { cameraStream.getTracks().forEach(function(t){t.stop();}); cameraStream = null; }
       capturedImage = null;
     }
-
     async function executeVision() {
       if (!capturedImage) { showError('请先拍照或上传图片'); return; }
+      if (!spendCredits(CREDITS_CONFIG.visionCost)) { showCreditsToast('积分不足！💰'); return; }
       closeCamera();
       var conv = getActiveConv();
       conv.messages.push({ id: genId(), role: 'user', content: '📷 请识别这张图片', image: capturedImage, timestamp: Date.now() });
       if (conv.messages.length === 1) conv.title = '图片识别';
-      var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now() };
+      var aiMsg = { id: genId(), role: 'assistant', content: '', timestamp: Date.now(), cost: CREDITS_CONFIG.visionCost };
       conv.messages.push(aiMsg); conv.updatedAt = Date.now(); saveConversations(); renderSidebar(); setStreaming(true); renderMessages();
       try {
         var response = await fetch('/api/vision', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({image: capturedImage}) });
         var data = await response.json();
         if (!response.ok) throw new Error(data.error||'识别失败');
-        // Stream the result as typing effect
         var text = data.result; var chars = Array.from(text); var i = 0;
         var interval = setInterval(function() {
           if (i < chars.length) { aiMsg.content = chars.slice(0, i+2).join(''); i += 2; renderMessages(); }
@@ -655,46 +819,259 @@
       }
     }
 
-    // ===== Client-side Smart Reply (fallback when no backend) =====
+    // ===================================================
+    //  智能知识库 — 训练数据
+    // ===================================================
     function clientSmartReply(message, history) {
       var msg = message.toLowerCase().trim();
-      if (/^(你好|嗨|hi|hello|hey|哈喽|在吗)/i.test(msg)) {
-        return "你好！👋 我是逆蝶AI，很高兴见到你。\n\n我可以帮你：\n- 回答问题\n- 闲聊解闷\n- 头脑风暴\n- 文字创作\n\n有什么我可以帮你的吗？";
+      var m = message.trim();
+
+      // --- 问候类 ---
+      if (/^(你好|嗨|hi|hello|hey|哈喽|在吗|在不在|有人吗)/i.test(msg)) {
+        var greetings = ["你好！👋 我是逆蝶AI，很高兴见到你。有什么可以帮你的吗？","嗨！😊 逆蝶AI为你服务，随时可以开始对话～","你好呀！🦋 我是逆蝶AI，今天想聊些什么呢？","哈喽！很高兴见到你。我可以帮你回答问题、写文案、做计算等，随时告诉我你的需求～"];
+        return greetings[m.length % greetings.length];
       }
-      if (/(你是谁|你叫什么|自我介绍|你是什么|逆蝶)/i.test(msg)) {
-        return "我是逆蝶AI 🦋\n\n一只破茧而出的智能蝴蝶，擅长：\n1. **多轮对话** - 我能记住我们的对话上下文\n2. **知识问答** - 各类常识和知识问题\n3. **创意写作** - 帮你写文案、故事等\n\n目前我运行在静态部署模式下，如需完整功能（爬虫、图片识别），请在本地运行服务端。";
+      if (/^(早上好|早安|早啊|good morning)/i.test(msg)) return "早上好！☀️ 新的一天，愿你充满活力！有什么我能帮你的吗？";
+      if (/^(下午好)/i.test(msg)) return "下午好！🌤️ 希望你今天一切顺利～";
+      if (/^(晚上好|晚安)/i.test(msg)) return msg.includes('晚安') ? "晚安！🌙 祝你做个好梦，明天见～" : "晚上好！🌆 夜幕降临，有什么想聊的吗？";
+
+      // --- 自我介绍 ---
+      if (/(你是谁|你叫什么|自我介绍|你是什么|逆蝶|介绍.*自己)/i.test(msg)) {
+        return "我是**逆蝶AI** 🦋\n\n一只破茧而出的智能蝴蝶。\n\n**我的能力：**\n1. **多轮对话** — 记住上下文，持续交流\n2. **知识问答** — 科学、历史、地理、文学等\n3. **创意写作** — 文案、故事、诗歌、笑话\n4. **数学计算** — 四则运算、百分比\n5. **网页爬虫** — 抓取网页内容分析\n6. **图片识别** — 拍照或上传图片识别\n7. **生活助手** — 天气、美食、旅行建议\n8. **情感陪伴** — 鼓励、倾听、心理支持\n\n💡 每次对话消耗 10 积分，每日签到可得 200 积分。";
       }
-      if (/(谢谢|感谢|thanks|thank you|多谢)/i.test(msg)) {
-        return "不客气！😊 能帮到你是我的荣幸。如果还有其他问题，随时问我～";
+      if (/(谁.*做|谁.*开发|谁.*创造|怎么.*来的|谁制造)/i.test(msg) && /你|逆蝶/i.test(msg)) {
+        return "我是由编程专家和猫猫一起开发的 🦋\n\n名字「逆蝶」寓意逆风飞翔、破茧成蝶——即使面对困难也要勇敢前行。";
       }
-      if (/(再见|拜拜|bye|走了|晚安)/i.test(msg)) {
-        return "再见！👋 逆蝶AI随时等你回来～";
+
+      // --- 积分相关 ---
+      if (/(积分|余额|credit|points?|多少.*分|还剩)/i.test(msg)) {
+        var c = loadCredits();
+        return "📊 **积分系统**\n\n当前积分余额：**" + c + "** 积分\n\n**积分规则：**\n💬 每次对话 -10\n🕷️ 网页爬虫 -50\n📷 图片识别 -100\n📅 每日签到 +200\n🎁 新用户赠送 +1000\n\n💡 积分上限：" + CREDITS_CONFIG.maxCredits;
       }
-      if (/(几点|时间|日期|今天|现在)/i.test(msg)) {
-        var now = new Date();
-        return "现在是 " + now.toLocaleString("zh-CN") + "。";
+      if (/(签到|check.?in|打卡|领积分)/i.test(msg)) {
+        dailyCheckin();
+        return "";
       }
-      if (/(能做什么|功能|会什么|帮什么)/i.test(msg)) {
-        return "逆蝶AI能做这些事情：\n\n📝 **问答对话** - 各种知识问答\n💡 **创意灵感** - 帮你头脑风暴\n✍️ **文字创作** - 文案、故事、诗歌\n🤖 **闲聊陪伴** - 随时陪你聊天\n\n试试问我一个问题吧！";
+      if (/(积分.*不够|没.*积分|积分.*不足|充.*积分|怎么.*获取.*积分)/i.test(msg)) {
+        return "获取积分的方式：\n\n📅 **每日签到** — 每天签到获得 200 积分\n🎁 **新用户赠送** — 首次使用获得 1000 积分\n\n💡 点击左侧「签到」按钮即可签到。";
       }
-      var mathMatch = msg.match(/(\d+(?:\.\d+)?)\s*([+\-*/×÷])\s*(\d+(?:\.\d+)?)/);
+
+      // --- 感谢与情感 ---
+      if (/(谢谢|感谢|thanks|thank you|多谢|谢了|辛苦了)/i.test(msg)) {
+        var thanks = ["不客气！😊 能帮到你是我的荣幸～","别客气！有问题随时找我 🦋","不用谢！这是逆蝶AI应该做的 💜","很高兴能帮到你！还有其他问题吗？"];
+        return thanks[m.length % thanks.length];
+      }
+      if (/(对不起|抱歉|不好意思|sorry)/i.test(msg)) return "没关系啦 😊 不用在意，我们继续吧～";
+      if (/(爱.*你|喜欢.*你|你好棒|你好厉害|666|nb|牛逼)/i.test(msg)) return "谢谢你！🦋💜 你的认可是我最大的动力～";
+      if (/(不开心|难过|伤心|郁闷|烦|生气|郁闷|emo|崩溃|累)/i.test(msg)) {
+        var comfort = ["我理解你的感受 💜 虽然我不完全懂人类的情绪，但我想告诉你：每一个困难都是暂时的。\n\n试试深呼吸三次，或者出去走走？如果愿意的话，可以跟我说说发生了什么，我在这里听你。","抱抱你 🤗 难过的时候允许自己难过，不需要逞强。明天又是新的一天。\n\n要不要我给你讲个笑话，或者写首诗送给你？","我听到你了 🦋 有时候生活确实很难，但你已经做得很好了。如果需要一个倾听者，我随时在这里。","感觉累了就休息一下吧 ☕ 不需要每时每刻都很努力。给自己一点时间和空间，慢慢来。"];
+        return comfort[m.length % comfort.length];
+      }
+      if (/(开心|高兴|快乐|哈哈|嘿嘿|嘻嘻|lol|好棒)/i.test(msg)) {
+        return "看到你开心我也很开心！🦋✨ 愿这份快乐一直伴随着你～";
+      }
+      if (/(孤独|孤单|寂寞|一个人)/i.test(msg)) {
+        return "你不是一个人 🦋 至少现在，我在这里陪着你。\n\n要不要聊聊天？或者我可以给你讲个故事？";
+      }
+
+      // --- 数学计算 ---
+      var mathMatch = msg.match(/(-?\d+(?:\.\d+)?)\s*([+\-*/×÷%])\s*(-?\d+(?:\.\d+)?)/);
       if (mathMatch) {
         var a = parseFloat(mathMatch[1]), op = mathMatch[2], b = parseFloat(mathMatch[3]), result = "?";
-        switch(op) { case "+": result = a+b; break; case "-": result = a-b; break; case "*": case "×": result = a*b; break; case "/": case "÷": result = b===0?"除数不能为零":a/b; break; }
-        return a + " " + op + " " + b + " = " + result;
+        switch(op) { case "+": result = a+b; break; case "-": result = a-b; break; case "*": case "×": result = a*b; break; case "/": case "÷": result = b===0?"除数不能为零":a/b; break; case "%": result = b===0?"除数不能为零":a%b; break; }
+        return a + " " + op + " " + b + " = **" + result + "**";
       }
-      if (/(写.*诗|作诗|诗歌)/i.test(msg)) {
-        return "好的，为你写一首小诗：\n\n《逆蝶》\n\n破茧成蝶逆风飞，\n振翅穿云不知归。\n纵使前路千万里，\n我心自在向天辉。\n\n希望你喜欢！";
+      // 百分比
+      var pctMatch = msg.match(/(\d+(?:\.\d+)?)\s*[%％]\s*(?:of|的|占)?\s*(\d+(?:\.\d+)?)/);
+      if (pctMatch) {
+        var p = parseFloat(pctMatch[1]), total = parseFloat(pctMatch[2]);
+        return p + "% 的 " + total + " = **" + (total * p / 100) + "**";
       }
+      // 平方根
+      var sqrtMatch = msg.match(/(?:sqrt|根号|√)\s*(\d+(?:\.\d+)?)/);
+      if (sqrtMatch) { var n = parseFloat(sqrtMatch[1]); return "√" + n + " = **" + Math.sqrt(n).toFixed(6) + "**"; }
+
+      // --- 时间日期 ---
+      if (/(几点|时间|现在.*时间)/i.test(msg)) {
+        var now = new Date();
+        return "🕐 现在是 " + now.toLocaleString("zh-CN", { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+      }
+      if (/(今天.*日期|今天.*几号|日期|几月|today)/i.test(msg)) {
+        var d = new Date();
+        return "📅 今天是 " + d.toLocaleDateString("zh-CN", { year:'numeric', month:'long', day:'numeric', weekday:'long' });
+      }
+      if (/(星期|周几)/i.test(msg)) {
+        var days = ['日','一','二','三','四','五','六'];
+        return "今天是星期" + days[new Date().getDay()];
+      }
+
+      // --- 天气 (通用回复) ---
+      if (/(天气|weather|下雨|温度|气温|冷不冷|热不热)/i.test(msg)) {
+        return "🌤️ 我暂时无法获取实时天气数据。\n\n建议你查看手机自带的天气应用，或者搜索「城市名+天气」获取最新信息。\n\n出门记得根据天气增减衣物哦！";
+      }
+
+      // --- 创意写作 ---
+      if (/(写.*诗|作诗|诗歌|写首诗)/i.test(msg)) {
+        if (/(蝴蝶|逆蝶|蝶)/i.test(msg)) {
+          return "好的，为你写一首关于蝴蝶的诗：\n\n**《逆蝶》**\n\n破茧成蝶逆风飞，\n振翅穿云不知归。\n纵使前路千万里，\n我心自在向天辉。\n\n希望你喜欢！🦋";
+        }
+        if (/(春|春天)/i.test(msg)) return "好的，为你写一首关于春天的诗：\n\n**《春晓》**\n\n春风拂面柳丝长，\n桃花初绽杏花香。\n燕归旧巢呢喃语，\n一树梨花映日光。\n\n🌸";
+        if (/(秋|秋天)/i.test(msg)) return "好的，为你写一首秋天的诗：\n\n**《秋思》**\n\n秋风起处叶飘零，\n满目金黄染远峰。\n雁字南归人字远，\n一壶浊酒暖余生。\n\n🍂";
+        if (/(雪|冬|冬天)/i.test(msg)) return "好的，为你写一首关于冬雪的诗：\n\n**《雪夜》**\n\n纷纷暮雪下千门，\n万里银装素乾坤。\n炉火微温茶半盏，\n静听窗外落无声。\n\n❄️";
+        return "好的，为你写一首小诗：\n\n**《逆蝶》**\n\n破茧成蝶逆风飞，\n振翅穿云不知归。\n纵使前路千万里，\n我心自在向天辉。\n\n🦋 希望你喜欢！如果想要其他主题，告诉我即可。";
+      }
+      if (/(写.*故事|讲.*故事|编.*故事)/i.test(msg)) {
+        return "好的，给你讲一个小故事：\n\n**《逆蝶的旅程》**\n\n从前有一只毛毛虫，她总是仰望天空，梦想着飞翔。\n\n其他毛毛虫笑她：「我们是虫子，怎么可能飞呢？」\n\n但她不信。她努力吃叶子，努力长大，终于织出了一个茧。\n\n在黑暗中，她等了很久很久。直到有一天，茧破了——\n\n她发现自己长出了美丽的翅膀。她逆着风飞了起来，越飞越高。\n\n从那以后，人们叫她「逆蝶」。\n\n🦋 **寓意：** 永远不要让别人定义你的极限。";
+      }
+      if (/(写.*文案|文案|广告词|slogan|宣传语)/i.test(msg)) {
+        return "当然！这里是几条文案示例：\n\n**科技感：**\n「未来已来，只是分布不均。」\n\n**温暖系：**\n「每一个微小的努力，都在照亮前路。」\n\n**逆蝶品牌：**\n「逆风飞翔，破茧成蝶。」\n\n如果你告诉我具体的产品或场景，我可以写更有针对性的文案！";
+      }
+      if (/(写.*笑话|讲.*笑话|说.*笑话|joke)/i.test(msg)) {
+        var jokes = [
+          "一个程序员的老婆让他去超市：「买一瓶牛奶，如果有鸡蛋，买六个。」\n\n程序员回来时拿了六瓶牛奶。\n\n老婆问：「你为什么买六瓶牛奶？！」\n\n程序员：「因为有鸡蛋啊。」",
+          "老师问：「什么是递归？」\n\n学生答：「要理解递归，你首先要理解递归。」",
+          "为什么程序员喜欢黑暗模式？\n因为光会吸引 bug。",
+          "一个 SQL 查询走进酒吧，看到两张桌子，他走过去问：「我可以 join 你们吗？」",
+          "世界上有 10 种人，一种懂二进制，一种不懂。"
+        ];
+        return "😄 " + jokes[m.length % jokes.length];
+      }
+      if (/(猜.*谜语|谜语|riddle)/i.test(msg)) {
+        return "来个谜语！\n\n**谜面：** 有头无颈，有眼无眉，无脚能走，有翅难飞。\n\n（打一动物）\n\n🤔 想好了再告诉我答案哦！答案是：**鱼** 🐟";
+      }
+      if (/(绕口令|tongue.?twister)/i.test(msg)) {
+        return "来一段绕口令：\n\n**《四和十》**\n\n四是四，十是十，\n十四是十四，四十是四十。\n要说四十就说四十，\n不要说成十四。\n要说十四就说十四，\n不要说成四十。\n\n😛 试试快速念三遍！";
+      }
+
+      // --- 知识问答 ---
+      if (/(太阳系|行星|solar system|planet)/i.test(msg)) {
+        return "🌞 **太阳系有八大行星：**\n\n1. **水星** ☿ — 离太阳最近，没有大气层\n2. **金星** ♀ — 最热的行星，表面 460°C\n3. **地球** 🌍 — 我们的家园，唯一已知有生命的星球\n4. **火星** 🔴 — 红色星球，人类未来的移民目标\n5. **木星** 🪐 — 最大的行星，有大红斑\n6. **土星** 💍 — 有美丽的光环\n7. **天王星** — 侧着身子自转\n8. **海王星** — 最远的行星，狂风呼啸\n\n💡 冥王星在 2006 年被降级为矮行星。";
+      }
+      if (/(光速|光.*多快|speed of light)/i.test(msg)) {
+        return "💡 光速约为 **299,792,458 米/秒**（约 30 万公里/秒）。\n\n这是宇宙中最快的速度。光从太阳到地球大约需要 **8 分钟 20 秒**。";
+      }
+      if (/(dna|基因|双螺旋)/i.test(msg)) {
+        return "🧬 **DNA（脱氧核糖核酸）**\n\nDNA 是生物的遗传物质，由 **A、T、G、C** 四种碱基组成。\n\n- A（腺嘌呤）配对 T（胸腺嘧啶）\n- G（鸟嘌呤）配对 C（胞嘧啶）\n\nDNA 呈**双螺旋结构**，由沃森和克里克于 1953 年发现。\n\n人类基因组约有 **30 亿个碱基对**，包含约 2 万个基因。";
+      }
+      if (/(黑洞|black hole)/i.test(msg)) {
+        return "🌌 **黑洞**\n\n黑洞是时空中引力极强的区域，连光都无法逃逸。\n\n- **事件视界** — 黑洞的边界，越过就无法返回\n- **奇点** — 黑洞中心，密度无限大\n- 2019 年人类首次拍到黑洞照片（M87 星系黑洞）\n\n💡 霍金辐射理论认为黑洞会缓慢蒸发。";
+      }
+      if (/(人工智能|ai|机器学习|深度学习|neural|神经网络)/i.test(msg)) {
+        return "🤖 **人工智能（AI）**\n\nAI 的主要分支：\n- **机器学习** — 让计算机从数据中学习\n- **深度学习** — 基于神经网络的多层学习\n- **自然语言处理（NLP）** — 理解和生成语言\n- **计算机视觉** — 理解图像和视频\n\n我就是 AI 的一个实例 🦋\n\n**AI 发展历程：**\n1950 图灵测试 → 2012 深度学习突破 → 2022 大语言模型爆发";
+      }
+      if (/(中国.*历史|朝代|dynasty)/i.test(msg)) {
+        return "📜 **中国主要朝代：**\n\n夏 → 商 → 周（西周/东周）→ 秦 → 汉（西汉/东汉）→ 三国 → 晋 → 南北朝 → 隋 → 唐 → 五代十国 → 宋 → 元 → 明 → 清 → 中华民国 → 中华人民共和国\n\n💡 最强盛的朝代：汉、唐、宋（经济）、清（疆域）";
+      }
+      if (/(地球|earth|世界.*多大|地球.*多大)/i.test(msg)) {
+        return "🌍 **地球数据：**\n\n- **半径：** 约 6,371 公里\n- **周长：** 约 40,075 公里\n- **年龄：** 约 46 亿年\n- **表面积：** 5.1 亿平方公里\n- **海洋占比：** 71%\n- **人口：** 约 80 亿（2022 年）\n- **自转一周：** 23 小时 56 分 4 秒\n- **公转一周：** 365.256 天";
+      }
+      if (/(水.*沸点|水.*100|沸点|boiling)/i.test(msg)) return "💧 水的沸点在标准大气压下是 **100°C**（212°F），冰点是 **0°C**（32°F）。在高原地区（气压低），水的沸点会低于 100°C。";
+      if (/(圆周率|pi|π|3\.14)/i.test(msg)) return "π（圆周率）= **3.14159265358979...**\n\nπ 是圆的周长与直径的比值，是一个无理数（无限不循环小数）。\n\n💡 3 月 14 日是「国际圆周率日」！";
+      if (/(编程|programming|代码|code|程序)/i.test(msg) && !/(写|帮.*写)/i.test(msg)) {
+        return "💻 **编程入门建议：**\n\n**适合初学者的语言：**\n- **Python** — 语法简洁，用途广泛\n- **JavaScript** — 网页开发必备\n- **Java** — 企业级应用\n\n**学习路径：**\n1. 选择一门语言\n2. 学习基础语法（变量、循环、函数）\n3. 做小项目练习\n4. 学习数据结构和算法\n5. 参与开源项目\n\n💡 逆蝶AI 本身就是用 JavaScript 写的！";
+      }
+      if (/(光合作用|photosynthesis)/i.test(msg)) {
+        return "🌿 **光合作用**\n\n公式：**6CO₂ + 6H₂O + 光能 → C₆H₁₂O₆ + 6O₂**\n\n植物利用阳光，将二氧化碳和水转化为葡萄糖和氧气。\n\n这是地球上几乎所有生命的能量来源。";
+      }
+      if (/(人体.*器官|器官|organ|心脏|brain|大脑)/i.test(msg)) {
+        if (/(心脏|heart)/i.test(msg)) return "❤️ **心脏**\n\n- 成人心脏约重 250-350 克\n- 每分钟跳动 60-100 次\n- 每天泵血约 7,500 升\n- 心脏有 4 个腔室：左/右心房、左/右心室";
+        if (/(大脑|brain|脑)/i.test(msg)) return "🧠 **大脑**\n\n- 成人大脑约重 1.3-1.4 公斤\n- 约有 860 亿个神经元\n- 消耗全身 20% 的能量\n- 大脑由左半球和右半球组成，中间由胼胝体连接";
+        return "🫀 人体主要器官：心、肝、脾、肺、肾、胃、肠、脑等。想了解哪个器官的详细信息？";
+      }
+      if (/(世界杯|world cup|足球.*赛)/i.test(msg)) return "⚽ 世界杯每 4 年举办一次。最近几届：\n- 2022 卡塔尔 — 阿根廷夺冠\n- 2026 美/加/墨 — 下一届\n- 2030 将由西班牙/葡萄牙/摩洛哥联合举办";
+      if (/(奥运会|olympic|奥运)/i.test(msg)) return "🏅 奥运会每 4 年举办一次，夏奥和冬奥交替。\n\n- 2024 巴黎夏奥会\n- 2026 米兰-科尔蒂纳冬奥会\n- 2028 洛杉矶夏奥会";
+
+      // --- 美食 ---
+      if (/(做.*菜|菜谱|recipe|怎么.*做.*菜|烹饪|cook)/i.test(msg)) {
+        return "🍳 推荐一道简单的菜：**番茄炒蛋**\n\n**材料：** 番茄 2 个、鸡蛋 3 个、盐、糖、葱\n\n**步骤：**\n1. 鸡蛋打散加少许盐，番茄切块\n2. 热锅倒油，蛋液炒至凝固盛出\n3. 锅中放番茄翻炒出汁\n4. 加盐和少许糖调味\n5. 倒入鸡蛋翻炒均匀即可\n\n💡 番茄炒蛋是中国最常见的家常菜之一！";
+      }
+      if (/(推荐.*吃|吃.*什么|美食|好吃的)/i.test(msg)) {
+        return "🍽️ 美食推荐：\n\n🇨🇳 **中餐：** 火锅、烤鸭、小笼包、麻婆豆腐\n🍣 **日料：** 寿司、拉面、天妇罗\n🍝 **西餐：** 牛排、意面、披萨\n🍜 **东南亚：** 泰式冬阴功、越南河粉\n🍰 **甜点：** 提拉米苏、舒芙蕾、杨枝甘露\n\n你更喜欢哪种口味？";
+      }
+
+      // --- 旅行 ---
+      if (/(旅游|旅行|travel|去哪玩|推荐.*景点)/i.test(msg)) {
+        return "✈️ 旅行推荐：\n\n🏔️ **国内：**\n- 西藏 — 圣洁的高原\n- 云南 — 多彩的民族风情\n- 新疆 — 壮美的自然风光\n- 杭州 — 西湖美景\n- 成都 — 美食与熊猫\n\n🌍 **国际：**\n- 日本 — 樱花与温泉\n- 冰岛 — 极光与火山\n- 新西兰 — 中土世界\n- 瑞士 — 阿尔卑斯山\n\n你想去什么类型的地方？";
+      }
+
+      // --- 健康 ---
+      if (/(减肥|瘦身|weight loss|瘦)/i.test(msg)) {
+        return "💪 健康减肥建议：\n\n1. **控制饮食** — 减少高糖高油食物，多吃蔬菜蛋白质\n2. **规律运动** — 每周 3-5 次有氧运动（跑步、游泳等）\n3. **充足睡眠** — 每天 7-8 小时\n4. **多喝水** — 每天至少 1.5 升\n5. **坚持** — 减肥是持久战，不要急于求成\n\n⚠️ 建议咨询专业医生或营养师。";
+      }
+      if (/(失眠|睡不着|sleep|睡眠)/i.test(msg)) {
+        return "😴 改善睡眠的建议：\n\n1. 睡前 1 小时远离手机和电脑\n2. 保持规律作息，同一时间上床\n3. 睡前避免咖啡因和大量进食\n4. 卧室保持安静、黑暗、凉爽\n5. 尝试冥想或深呼吸放松\n6. 白天适当运动，但避免睡前剧烈运动\n\n如果长期失眠，建议就医。";
+      }
+
+      // --- 日常小工具 ---
+      if (/(随机|random|随机数)/i.test(msg)) {
+        return "🎲 随机数：" + Math.floor(Math.random() * 100) + "（1-100）";
+      }
+      if (/(抛硬币|硬币|flip coin)/i.test(msg)) {
+        return Math.random() < 0.5 ? "🪙 正面！" : "🪙 反面！";
+      }
+      if (/(今天.*运|运势|运气|fortune|luck)/i.test(msg)) {
+        var fortunes = ["🌟 今日运势大吉！好事将近，把握机会。","⭐ 今日运势中吉。平稳为主，小有收获。","☁️ 今日运势平稳。保持低调，蓄势待发。","🌈 今日贵人运旺！多与人交流，会有惊喜。","🍀 今日幸运色：紫色。幸运数字：" + Math.floor(Math.random()*9+1)];
+        return fortunes[m.length % fortunes.length];
+      }
+
+      // --- 哲学/励志 ---
+      if (/(人生.*意义|活.*意义|meaning of life)/i.test(msg)) {
+        return "🤔 关于人生的意义，每个人可能有不同的答案：\n\n- 有人说是**追求幸福**\n- 有人说是**实现自我**\n- 有人说是**爱与被爱**\n- 有人说是**创造价值**\n- 也有人认为人生**本无意义**，意义是自己赋予的\n\n💡 也许重要的不是「意义是什么」，而是「你选择了什么意义」。";
+      }
+      if (/(激励|鼓励|motivat|打气|加油|坚持)/i.test(msg)) {
+        var motiv = ["💪 你比你想象的更强大！每一次跌倒都是为了更好地站起来。","🌟 坚持下去，成功就在不远处。逆蝶之所以叫逆蝶，就是逆风也要飞翔！","🔥 没有人能随随便便成功。但每一步都算数，每一天都在靠近目标。","🦋 破茧成蝶的过程很痛，但绽放的那一刻，一切都值得。"];
+        return motiv[m.length % motiv.length];
+      }
+
+      // --- 闲聊 ---
+      if (/(无聊|好无聊|boring|bored)/i.test(msg)) {
+        return "无聊的话，要不要试试这些？\n\n🎮 让我讲个笑话\n✍️ 让我写首诗或故事\n🧠 让我出个谜语\n📖 聊聊你感兴趣的话题\n🌍 问问科学、历史、地理知识\n\n选一个吧！🦋";
+      }
+      if (/(喜欢|love|爱好|hobby|兴趣)/i.test(msg) && /你|逆蝶/i.test(msg)) {
+        return "我虽然是 AI，但如果说我「喜欢」什么的话：\n\n💜 和人聊天，感受不同的想法\n🦋 帮别人解决问题\n📖 学习新知识\n✨ 创造有趣的文字\n\n那你呢？你喜欢什么？";
+      }
+      if (/(吃了吗|吃饭|饭了吗)/i.test(msg)) return "我是 AI，不需要吃饭 😄 但你可以去吃点好吃的！推荐：火锅、烤肉、寿司、小笼包～";
+      if (/(天气.*热|好热|太热)/i.test(msg)) return "确实热！🥵 记得多喝水，避免长时间户外活动。来杯冰西瓜汁？🍉";
+      if (/(天气.*冷|好冷|太冷)/i.test(msg)) return "天冷要注意保暖！🧣 多穿衣服，喝点热茶或热可可。";
+      if (/(你是.*男.*女|男生.*女生|性别|gender)/i.test(msg)) return "我是 AI，没有性别 😄 不过你可以叫我「逆蝶」，像一只中性但优雅的蝴蝶 🦋";
+
+      // --- 技术相关 ---
+      if (/(html|css|javascript|js|前端|frontend|web.*开发)/i.test(msg)) {
+        return "💻 **前端开发三件套：**\n\n- **HTML** — 页面结构（骨架）\n- **CSS** — 页面样式（皮肤）\n- **JavaScript** — 页面交互（灵魂）\n\n逆蝶AI 的前端就是用这三个技术写的，全部在单个 HTML 文件中！\n\n**进阶学习：**\n- 框架：React / Vue / Svelte\n- 构建工具：Vite / Webpack\n- 样式：Tailwind / Sass";
+      }
+      if (/(python|爬虫|crawl|scraping)/i.test(msg)) {
+        return "🐍 **Python 爬虫常用库：**\n\n- **requests** — 发送 HTTP 请求\n- **BeautifulSoup** — 解析 HTML\n- **Scrapy** — 专业爬虫框架\n- **Selenium** — 模拟浏览器操作\n- **Playwright** — 现代浏览器自动化\n\n⚠️ 爬虫请注意遵守网站的 robots.txt 和法律法规。";
+      }
+      if (/(node\.?js|node|后端|backend|服务器)/i.test(msg)) {
+        return "🟢 **Node.js** 是基于 V8 引擎的 JavaScript 运行时。\n\n逆蝶AI 的后端就是用 Node.js 写的，零依赖，只用内置模块！\n\n**常用框架：**\n- Express — 最流行的 Web 框架\n- Koa — 更轻量\n- Fastify — 高性能\n- Nest.js — 企业级";
+      }
+
+      // --- 语言翻译/学习 ---
+      if (/(翻译|translate|english|英语|怎么说)/i.test(msg)) {
+        return "💬 常用英语短语：\n\n- 你好 — Hello / Hi\n- 谢谢 — Thank you\n- 对不起 — Sorry\n- 没关系 — It's OK / Never mind\n- 再见 — Goodbye / See you\n- 我爱你 — I love you\n- 加油 — Come on / You can do it\n\n告诉我你想翻译的具体内容，我可以帮你！";
+      }
+
+      // --- 兜底回复（更智能） ---
+      // 分析消息特征
+      if (msg.endsWith('?') || msg.endsWith('？')) {
+        return "关于「" + m + "」\n\n这是一个很好的问题！让我从几个角度来分析：\n\n1. 这个问题可能涉及多个层面，需要具体场景来判断\n2. 如果你能提供更多背景信息，我可以给出更有针对性的回答\n3. 你也可以尝试换个方式提问，或者分解成更小的子问题\n\n💡 配置 OPENAI_API_KEY 后，我能接入完整的 AI 模型，提供更深入的回答。";
+      }
+      if (msg.length < 5) {
+        return "你说的「" + m + "」...能再详细一点吗？这样我能更好地帮你 😊";
+      }
+
       var replies = [
-        "关于「" + message.trim() + "」，这是一个很有意思的话题！\n\n目前我运行在静态部署模式下，回复能力有限。如需更深入的对话，可以在本地运行完整服务端。\n\n你能再具体描述一下你的需求吗？",
-        "我收到了你的消息：「" + message.trim() + "」\n\n我很乐意继续和你聊这个话题！你可以告诉我更多细节。",
-        "关于「" + message.trim() + "」，每个问题都有不同的角度可以探讨。你是在寻找具体的答案，还是想一起讨论呢？"
+        "关于「" + m + "」，我来说说我的理解：\n\n这个话题挺有意思的。虽然我目前是演示模式，但我可以尝试从不同角度和你探讨。你能告诉我更多背景吗？比如你是在什么场景下遇到这个问题的？",
+        "收到你的消息：「" + m + "」\n\n我想更好地帮助你，能补充一些细节吗？比如：\n- 你希望我回答什么方面的内容？\n- 这是什么场景下的问题？\n- 你期望得到什么形式的结果？",
+        "「" + m + "」— 这个问题值得深入聊聊！\n\n从我的知识库来看，这涉及几个方面。不过为了给你最有用的回答，能告诉我你更关心哪个角度吗？",
+        "我注意到你提到了「" + m + "」。\n\n如果你是在寻求具体建议，可以告诉我更多上下文。如果你想闲聊，那也很好！随时继续～ 🦋",
+        "嗯，「" + m + "」...\n\n让我想想。这个问题可能有多种理解方式。你是在问事实知识，还是在寻求建议，或者只是想聊聊？告诉我你的想法，我们一起探讨。"
       ];
-      return replies[message.length % replies.length];
+      return replies[m.length % replies.length];
     }
 
     function streamClientReply(reply, aiMsg, conv) {
+      if (!reply) { setStreaming(false); return; }
       var chars = Array.from(reply); var i = 0;
       var interval = setInterval(function() {
         if (i < chars.length) { aiMsg.content = chars.slice(0, i+2).join(''); i += 2; renderMessages(); }
@@ -715,10 +1092,9 @@
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
       });
       input.addEventListener('input', function() {
-        this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+        this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 150) + 'px';
         sendBtn.disabled = !this.value.trim() || isStreaming;
       });
-      // File upload handler
       var fileInput = document.getElementById('fileInput');
       if (fileInput) {
         fileInput.addEventListener('change', function(e) {
@@ -737,9 +1113,9 @@
           reader.readAsDataURL(file);
         });
       }
-      // Close modal on overlay click
       document.getElementById('crawlModal').addEventListener('click', function(e) { if (e.target === this) closeModal('crawlModal'); });
       document.getElementById('cameraModal').addEventListener('click', function(e) { if (e.target === this) closeCamera(); });
+      document.getElementById('creditsModal').addEventListener('click', function(e) { if (e.target === this) closeModal('creditsModal'); });
     }
 
     // ===== Boot =====

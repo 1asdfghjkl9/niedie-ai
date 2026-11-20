@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <title>逆蝶AI v4.0</title>
+  <title>逆蝶AI v4.1</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -475,8 +475,37 @@
   </div>
 
   <script type="module">
-    import * as webllm from "https://esm.run/@mlc-ai/web-llm";
-    import { NiedieBrain } from "./brain.js";
+    // Dynamic imports - loaded on demand so page renders immediately
+    var webllm = null;
+    var webllmLoading = false;
+    var NiedieBrain = null;
+
+    async function ensureWebLLM() {
+      if (webllm) return webllm;
+      if (webllmLoading) {
+        // Wait for ongoing load
+        while (webllmLoading) { await new Promise(r => setTimeout(r, 100)); }
+        return webllm;
+      }
+      webllmLoading = true;
+      try {
+        var mod = await import("https://esm.run/@mlc-ai/web-llm");
+        webllm = mod;
+      } catch(e) {
+        console.error('WebLLM load failed:', e);
+        throw e;
+      } finally {
+        webllmLoading = false;
+      }
+      return webllm;
+    }
+
+    async function ensureBrain() {
+      if (NiedieBrain) return NiedieBrain;
+      var mod = await import("./brain.js");
+      NiedieBrain = mod.NiedieBrain;
+      return NiedieBrain;
+    }
 
     // ===== State =====
     var engine = null;
@@ -637,7 +666,7 @@
       var conv = getCurrentConv();
       var el = document.getElementById('messages');
       if (!conv || conv.messages.length === 0) {
-        el.innerHTML = '<div class="msg-system">🦋 逆蝶AI v4.0 — 浏览器内运行真实大语言模型<br>数据不出本地，完全隐私安全</div>';
+        el.innerHTML = '<div class="msg-system">🦋 逆蝶AI v4.1 — 浏览器内运行真实大语言模型<br>数据不出本地，完全隐私安全</div>';
         return;
       }
       el.innerHTML = conv.messages.map(function(m) {
@@ -710,7 +739,8 @@
       updateStatusBadge('loading', '加载中');
 
       try {
-        engine = await webllm.CreateMLCEngine(modelId, {
+        var wllm = await ensureWebLLM();
+        engine = await wllm.CreateMLCEngine(modelId, {
           initProgressCallback: function(report) {
             var pct = Math.round((report.progress || 0) * 100);
             progEl.style.width = pct + '%';
@@ -757,7 +787,9 @@
       if (newModel === 'brain') {
         brainPanel.style.display = 'block';
         modelInfo.textContent = '纯JavaScript神经网络，在浏览器中从零训练';
-        initBrain();
+        initBrain().catch(function(e) {
+          updateTrainUI('加载失败: ' + e.message);
+        });
       } else {
         brainPanel.style.display = 'none';
         modelInfo.textContent = '首次加载需下载模型，之后缓存';
@@ -767,9 +799,10 @@
     }
 
     // ===== 手搓AI Functions =====
-    function initBrain() {
+    async function initBrain() {
       if (!brain) {
-        brain = new NiedieBrain();
+        var BrainClass = await ensureBrain();
+        brain = new BrainClass();
         // Try load saved weights
         var saved = localStorage.getItem(BRAIN_KEY);
         if (saved) {
@@ -795,7 +828,8 @@
       btn.disabled = true;
       btn.textContent = '⏳ 训练中...';
 
-      if (!brain) brain = new NiedieBrain();
+      var BrainClass = NiedieBrain || (await ensureBrain());
+      if (!brain) brain = new BrainClass();
 
       var epochs = 80;
       await brain.train(null, epochs, function(progress, loss, epoch, totalEpochs) {

@@ -357,8 +357,17 @@
           <option value="Phi-3.5-mini-instruct-q4f16_1-MLC">Phi 3.5 mini (2.1GB·推理强)</option>
           <option value="gemma-2-2b-it-q4f16_1-MLC">Gemma 2 2B (1.44GB·Google)</option>
           <option value="rule-based">规则模式（无需GPU）</option>
+          <option value="brain">🧠 手搓AI (纯JS神经网络)</option>
         </select>
         <div class="model-info" id="modelInfo">首次加载需下载模型，之后缓存</div>
+        <!-- 手搓AI训练面板 -->
+        <div id="brainPanel" style="display:none;margin-top:8px;">
+          <button class="credits-btn checkin-btn" id="trainBtn" style="width:100%;margin-bottom:6px;" onclick="startBrainTraining()">🔧 开始训练神经网络</button>
+          <div id="trainProgress" style="font-size:11px;color:var(--text-muted);"></div>
+          <div style="height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;margin-top:4px;">
+            <div id="trainBar" style="height:100%;background:var(--accent);width:0%;transition:width 0.3s;"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Credits -->
@@ -467,6 +476,7 @@
 
   <script type="module">
     import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+    import { NiedieBrain } from "./brain.js";
 
     // ===== State =====
     var engine = null;
@@ -478,6 +488,11 @@
     var pendingImage = null;
     var webgpuSupported = false;
     var webgpuChecked = false;
+
+    // ===== 手搓AI State =====
+    var brain = null;
+    var brainTraining = false;
+    var BRAIN_KEY = 'niedie-brain-weights';
 
     // Check WebGPU support (async, resolved before model load)
     async function checkWebGPU() {
@@ -656,6 +671,19 @@
         return;
       }
 
+      if (modelId === 'brain') {
+        if (brain && brain.trained) {
+          modelLoaded = true;
+          engine = null;
+          updateStatusBadge('online', '手搓AI就绪');
+        } else {
+          modelLoaded = false;
+          engine = null;
+          updateStatusBadge('offline', '需先训练');
+        }
+        return;
+      }
+
       // Wait for WebGPU check to complete
       if (!webgpuChecked) await checkWebGPU();
 
@@ -722,7 +750,94 @@
       }
       currentModel = newModel;
       localStorage.setItem('niedie-model', newModel);
+
+      // Show/hide brain panel
+      var brainPanel = document.getElementById('brainPanel');
+      var modelInfo = document.getElementById('modelInfo');
+      if (newModel === 'brain') {
+        brainPanel.style.display = 'block';
+        modelInfo.textContent = '纯JavaScript神经网络，在浏览器中从零训练';
+        initBrain();
+      } else {
+        brainPanel.style.display = 'none';
+        modelInfo.textContent = '首次加载需下载模型，之后缓存';
+      }
+
       loadModel(newModel);
+    }
+
+    // ===== 手搓AI Functions =====
+    function initBrain() {
+      if (!brain) {
+        brain = new NiedieBrain();
+        // Try load saved weights
+        var saved = localStorage.getItem(BRAIN_KEY);
+        if (saved) {
+          if (brain.deserialize(saved)) {
+            updateTrainUI('已加载训练好的模型');
+            document.getElementById('trainBtn').textContent = '🔁 重新训练';
+            return;
+          }
+        }
+      }
+      if (brain && brain.trained) {
+        updateTrainUI('模型已就绪 ✓');
+        document.getElementById('trainBtn').textContent = '🔁 重新训练';
+      } else {
+        updateTrainUI('点击上方按钮开始训练');
+      }
+    }
+
+    async function startBrainTraining() {
+      if (brainTraining) return;
+      brainTraining = true;
+      var btn = document.getElementById('trainBtn');
+      btn.disabled = true;
+      btn.textContent = '⏳ 训练中...';
+
+      if (!brain) brain = new NiedieBrain();
+
+      var epochs = 80;
+      await brain.train(null, epochs, function(progress, loss, epoch, totalEpochs) {
+        var bar = document.getElementById('trainBar');
+        var text = document.getElementById('trainProgress');
+        bar.style.width = Math.round(progress * 100) + '%';
+        text.textContent = 'Epoch ' + epoch + '/' + totalEpochs + ' | Loss: ' + loss.toFixed(3) + ' | ' + Math.round(progress * 100) + '%';
+      });
+
+      // Save weights
+      try {
+        var serialized = brain.serialize();
+        localStorage.setItem(BRAIN_KEY, serialized);
+      } catch(e) {
+        console.warn('Failed to save brain weights:', e);
+      }
+
+      brainTraining = false;
+      btn.disabled = false;
+      btn.textContent = '🔁 重新训练';
+      updateTrainUI('训练完成 ✓ 可以开始对话了！');
+      showCreditsToast('神经网络训练完成！', false);
+      modelLoaded = true;
+      updateStatusBadge('online', '手搓AI就绪');
+    }
+
+    function updateTrainUI(msg) {
+      var text = document.getElementById('trainProgress');
+      if (text) text.textContent = msg;
+    }
+
+    async function brainChat(text) {
+      if (!brain || !brain.trained) {
+        return '模型尚未训练，请先点击训练按钮。';
+      }
+      // Build context prompt
+      var prompt = '用户：' + text + '\n逆蝶：';
+      var reply = brain.generate(prompt, 200, 0.7);
+      if (!reply || reply.trim().length === 0) {
+        reply = '让我想想... 我是一个小型神经网络，有时候会词穷。换个话题试试？';
+      }
+      return reply;
     }
 
     function cancelModelLoad() {
@@ -786,7 +901,7 @@
           return { role: m.role === 'user' ? 'user' : 'assistant', content: m.content };
         });
 
-        if (engine && currentModel !== 'rule-based') {
+        if (engine && currentModel !== 'rule-based' && currentModel !== 'brain') {
           // WebLLM streaming
           var messages = [{ role: 'system', content: SYSTEM_PROMPT }].concat(history);
           typingEl.remove();
@@ -824,6 +939,34 @@
           textNode.textContent = reply;
           // Save to conversation
           conv.messages.push({ role: 'assistant', content: reply, cost: CREDITS_CONFIG.chatCost, isUser: false });
+          saveConversations();
+          renderConvList();
+        } else if (currentModel === 'brain' && brain && brain.trained) {
+          // Brain (hand-built neural network)
+          typingEl.remove();
+
+          var replyDiv3 = document.createElement('div');
+          replyDiv3.className = 'msg msg-ai';
+          var textNode3 = document.createElement('span');
+          replyDiv3.appendChild(textNode3);
+          var costSpan3 = document.createElement('span');
+          costSpan3.className = 'msg-cost';
+          costSpan3.textContent = '消耗 ' + CREDITS_CONFIG.chatCost + ' 积分';
+          replyDiv3.appendChild(costSpan3);
+          document.getElementById('messages').appendChild(replyDiv3);
+
+          var brainReply = await brainChat(text);
+
+          // Simulate streaming for brain output
+          var displayed3 = '';
+          for (var j = 0; j < brainReply.length; j++) {
+            displayed3 += brainReply[j];
+            textNode3.textContent = displayed3;
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+            if (j % 3 === 0) await new Promise(function(r) { setTimeout(r, 15); });
+          }
+          textNode3.textContent = brainReply;
+          conv.messages.push({ role: 'assistant', content: brainReply, cost: CREDITS_CONFIG.chatCost, isUser: false });
           saveConversations();
           renderConvList();
         } else {
@@ -1160,6 +1303,7 @@
     window.toggleSidebar = toggleSidebar;
     window.autoResize = autoResize;
     window.handleKeyDown = handleKeyDown;
+    window.startBrainTraining = startBrainTraining;
 
     // ===== Init =====
     loadConversations();

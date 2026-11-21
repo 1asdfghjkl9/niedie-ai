@@ -483,19 +483,30 @@
     async function ensureWebLLM() {
       if (webllm) return webllm;
       if (webllmLoading) {
-        // Wait for ongoing load
         while (webllmLoading) { await new Promise(r => setTimeout(r, 100)); }
         return webllm;
       }
       webllmLoading = true;
-      try {
-        var mod = await import("https://esm.run/@mlc-ai/web-llm");
-        webllm = mod;
-      } catch(e) {
-        console.error('WebLLM load failed:', e);
-        throw e;
-      } finally {
-        webllmLoading = false;
+      // Try multiple CDNs - esm.run may be blocked in some regions
+      var cdns = [
+        "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.78/+esm",
+        "https://esm.run/@mlc-ai/web-llm",
+        "https://unpkg.com/@mlc-ai/web-llm@0.2.78/+esm"
+      ];
+      var lastErr = null;
+      for (var i = 0; i < cdns.length; i++) {
+        try {
+          var mod = await import(cdns[i]);
+          webllm = mod;
+          break;
+        } catch(e) {
+          lastErr = e;
+          console.warn('CDN failed (' + cdns[i] + '):', e.message);
+        }
+      }
+      webllmLoading = false;
+      if (!webllm) {
+        throw new Error('WebLLM库加载失败（所有CDN均不可用）。可能需要科学上网，或使用支持WebGPU的Chrome 113+浏览器。');
       }
       return webllm;
     }
@@ -510,7 +521,7 @@
     // ===== State =====
     var engine = null;
     var modelLoaded = false;
-    var currentModel = localStorage.getItem('niedie-model') || 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC';
+    var currentModel = localStorage.getItem('niedie-model') || 'rule-based';
     var isGenerating = false;
     var crawlMode = false;
     var cameraStream = null;
@@ -754,7 +765,18 @@
       } catch(err) {
         loadingEl.style.display = 'none';
         console.error('Model load error:', err);
-        showCreditsToast('模型加载失败: ' + (err.message || '未知错误') + '，已切换到规则模式', true);
+        var errMsg = err.message || '未知错误';
+        var tip = '模型加载失败';
+        if (errMsg.includes('CDN') || errMsg.includes('加载失败')) {
+          tip = '⚠️ WebLLM库加载失败\n可能原因：网络无法访问CDN（需科学上网）\n建议：使用规则模式或手搓AI';
+        } else if (errMsg.includes('WebGPU') || errMsg.includes('gpu')) {
+          tip = '⚠️ 浏览器不支持WebGPU\n请使用Chrome 113+或Edge 113+\n建议：使用规则模式或手搓AI';
+        } else if (errMsg.includes('fetch') || errMsg.includes('network')) {
+          tip = '⚠️ 模型文件下载失败\n模型文件存储在HuggingFace，国内可能无法访问\n建议：使用规则模式或手搓AI';
+        } else {
+          tip = '模型加载失败: ' + errMsg + '\n已切换到规则模式';
+        }
+        showCreditsToast(tip, true);
         document.getElementById('modelSelect').value = 'rule-based';
         currentModel = 'rule-based';
         modelLoaded = true;
@@ -1355,8 +1377,28 @@
     // Auto-load model
     document.getElementById('modelSelect').value = currentModel;
     (async function() {
-      await checkWebGPU();
-      loadModel(currentModel);
+      if (currentModel === 'rule-based') {
+        modelLoaded = true;
+        updateStatusBadge('online', '规则模式');
+      } else if (currentModel === 'brain') {
+        // Load brain but don't block
+        initBrain().catch(function(){});
+        var brainPanel = document.getElementById('brainPanel');
+        if (brainPanel) brainPanel.style.display = 'block';
+      } else {
+        // WebLLM model - check WebGPU first
+        await checkWebGPU();
+        if (webgpuSupported) {
+          loadModel(currentModel);
+        } else {
+          // Auto-fallback to rule-based
+          document.getElementById('modelSelect').value = 'rule-based';
+          currentModel = 'rule-based';
+          localStorage.setItem('niedie-model', 'rule-based');
+          modelLoaded = true;
+          updateStatusBadge('online', '规则模式');
+        }
+      }
     })();
   </script>
 </body>

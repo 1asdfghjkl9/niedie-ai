@@ -751,7 +751,18 @@
 
       try {
         var wllm = await ensureWebLLM();
+        // Use hf-mirror.com (China-accessible HuggingFace mirror) instead of huggingface.co
+        var appConfig = JSON.parse(JSON.stringify(wllm.prebuiltAppConfig));
+        if (appConfig && appConfig.model_list) {
+          appConfig.model_list.forEach(function(m) {
+            if (m.model) m.model = m.model.replace('huggingface.co', 'hf-mirror.com');
+            if (m.model_lib) m.model_lib = m.model_lib.replace('huggingface.co', 'hf-mirror.com');
+            if (m.vocabulary) m.vocabulary = m.vocabulary.replace('huggingface.co', 'hf-mirror.com');
+          });
+        }
+        textEl.textContent = '正在通过国内镜像下载模型，请耐心等待...';
         engine = await wllm.CreateMLCEngine(modelId, {
+          appConfig: appConfig,
           initProgressCallback: function(report) {
             var pct = Math.round((report.progress || 0) * 100);
             progEl.style.width = pct + '%';

@@ -69,7 +69,7 @@ function geluGrad(x, grad) {
     var v = x[i];
     var inner = c * (v + 0.044715 * v * v * v);
     var t = 2.0 / (1.0 + Math.exp(-2.0 * inner)) - 1.0;
-    var dt = 2.0 * (1.0 - t * t) / (1.0 + Math.exp(-2.0 * inner)); // sech^2
+    var dt = 1.0 - t * t; // sech^2(inner) = 1 - tanh^2(inner)
     var dInner = c * (1.0 + 3.0 * 0.044715 * v * v);
     var dGelu = 0.5 * (1.0 + t) + v * 0.5 * dt * dInner;
     out[i] = grad[i] * dGelu;
@@ -472,7 +472,7 @@ export class NiedieBrain {
     var maxTries = maxLen;
     
     // Add "逆蝶：" prefix context
-    var genContext = '逆蝶：';
+    var genContext = (prompt || '').slice(-50) + '\n逆蝶：';
     
     for (var t = 0; t < maxTries; t++) {
       // Take last contextLen chars from (genContext + output)

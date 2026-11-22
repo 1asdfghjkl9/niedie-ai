@@ -336,7 +336,7 @@
       <div class="sidebar-header">
         <span class="sidebar-logo">🦋</span>
         <span class="sidebar-title">逆蝶AI</span>
-        <span class="sidebar-version">v4.0</span>
+        <span class="sidebar-version">v4.1</span>
       </div>
 
       <button class="new-chat-btn" onclick="newConversation()">
@@ -628,7 +628,12 @@
       try { conversations = JSON.parse(localStorage.getItem(CONV_KEY)) || []; } catch(e) { conversations = []; }
     }
     function saveConversations() {
-      try { localStorage.setItem(CONV_KEY, JSON.stringify(conversations)); } catch(e) {}
+      try {
+        localStorage.setItem(CONV_KEY, JSON.stringify(conversations));
+      } catch(e) {
+        console.warn('保存对话失败:', e);
+        showCreditsToast('⚠️ 存储空间不足，部分对话可能无法保存', true);
+      }
     }
     function newConversation() {
       var conv = { id: Date.now(), title: '新对话', messages: [], model: currentModel };
@@ -796,7 +801,7 @@
       }
     }
 
-    function switchModel() {
+    async function switchModel() {
       if (isGenerating) {
         showCreditsToast('正在生成回复中，请稍后再切换模型', true);
         document.getElementById('modelSelect').value = currentModel;
@@ -820,7 +825,7 @@
       if (newModel === 'brain') {
         brainPanel.style.display = 'block';
         modelInfo.textContent = '纯JavaScript神经网络，在浏览器中从零训练';
-        initBrain().catch(function(e) {
+        await initBrain().catch(function(e) {
           updateTrainUI('加载失败: ' + e.message);
         });
       } else {
@@ -961,6 +966,7 @@
 
       try {
         var conv = getCurrentConv();
+        if (!conv) { newConversation(); conv = getCurrentConv(); }
         // Build history excluding system messages and empty assistant messages
         var history = conv.messages.filter(function(m) {
           return m.role !== 'system' && m.content && m.content.length > 0;
@@ -993,7 +999,7 @@
             max_tokens: 1024,
           });
 
-          for await (var chunk of chunks) {
+          for await (const chunk of chunks) {
             var delta = chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content;
             if (delta) {
               reply += delta;
@@ -1101,7 +1107,7 @@
 
       // Self intro
       if (/你是谁|你叫什么|介绍一下你自己|你是什么/.test(t))
-        return '我是逆蝶AI 🦋 一个运行在浏览器中的智能助手。我可以聊天、回答问题、写文案、做计算等。v4.0版本支持在浏览器内运行真实大语言模型！';
+        return '我是逆蝶AI 🦋 一个运行在浏览器中的智能助手。我可以聊天、回答问题、写文案、做计算等。v4.1版本支持在浏览器内运行真实大语言模型！';
 
       // Credits
       if (/积分|credit/.test(t)) {

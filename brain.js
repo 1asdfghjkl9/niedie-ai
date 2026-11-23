@@ -194,6 +194,35 @@ function clipGradsByNorm(grads, maxNorm) {
   return totalNorm;
 }
 
+// ===== Base64 编解码常量 =====
+var BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+var BASE64_DECODE = {};
+for (var _i = 0; _i < BASE64_CHARS.length; _i++) BASE64_DECODE[BASE64_CHARS[_i]] = _i;
+
+// ===== 预训练权重（通过fetch加载pretrained.bin） =====
+var _pretrainedCache = null;
+
+async function loadPretrainedWeights() {
+  if (_pretrainedCache) return _pretrainedCache;
+  try {
+    // 尝试相对于brain.js所在目录加载
+    var url = (typeof document !== 'undefined' && document.currentScript)
+      ? document.currentScript.src.replace(/brain\.js.*$/, '') + 'pretrained.bin'
+      : './pretrained.bin';
+    // 如果是ES module，使用import.meta.url
+    if (typeof import !== 'undefined' && import.meta && import.meta.url) {
+      url = import.meta.url.replace(/brain\.js.*$/, '') + 'pretrained.bin';
+    }
+    var resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    _pretrainedCache = await resp.text();
+    return _pretrainedCache;
+  } catch(e) {
+    console.warn('Failed to load pretrained weights:', e.message);
+    return null;
+  }
+}
+
 // ===== 训练数据 (200+条) =====
 var TRAINING_DATA = [
   // === 问候 (多变种) ===
@@ -449,6 +478,14 @@ export class NiedieBrain {
     this.currentLoss = 0;
     this.bestLoss = Infinity;
     this.trainStep = 0;
+  }
+
+  // 异步加载预训练权重
+  async loadPretrained() {
+    if (this.trained) return true;
+    var data = await loadPretrainedWeights();
+    if (!data) return false;
+    return this.deserializeBinary(data);
   }
 
   // ===== Tokenizer =====
@@ -845,13 +882,109 @@ export class NiedieBrain {
     return output.trim();
   }
 
-  // ===== 序列化 =====
+  // ===== 二进制序列化（紧凑base64，体积缩小6倍） =====
+  serializeBinary() {
+    var params = this.params;
+    var keys = Object.keys(params);
+    var totalLen = 0;
+    var offsets = {};
+    for (var i = 0; i < keys.length; i++) {
+      offsets[keys[i]] = totalLen;
+      totalLen += params[keys[i]].length;
+    }
+    var buf = new Float32Array(totalLen);
+    for (var i = 0; i < keys.length; i++) {
+      buf.set(params[keys[i]], offsets[keys[i]]);
+    }
+    // Float32Array → Uint8 → base64
+    var u8 = new Uint8Array(buf.buffer);
+    var b64 = '';
+    for (var i = 0; i < u8.length; i += 3) {
+      var b1 = u8[i] || 0;
+      var b2 = u8[i+1] || 0;
+      var b3 = u8[i+2] || 0;
+      b64 += BASE64_CHARS[b1 >> 2];
+      b64 += BASE64_CHARS[((b1 & 3) << 4) | (b2 >> 4)];
+      b64 += BASE64_CHARS[((b2 & 15) << 2) | (b3 >> 6)];
+      b64 += BASE64_CHARS[b3 & 63];
+    }
+    var meta = {
+      config: this.config,
+      vocab: this.vocab,
+      vocabSize: this.vocabSize,
+      trained: this.trained,
+      bestLoss: this.bestLoss || 0,
+      keys: keys,
+      offsets: offsets,
+      totalLen: totalLen,
+    };
+    return JSON.stringify(meta) + '\n' + b64;
+  }
+
+  deserializeBinary(data) {
+    try {
+      var nlIdx = data.indexOf('\n');
+      var meta = JSON.parse(data.substring(0, nlIdx));
+      var b64 = data.substring(nlIdx + 1);
+      this.config = meta.config;
+      this.vocab = meta.vocab;
+      this.vocabSize = meta.vocabSize;
+      this.trained = meta.trained;
+      this.bestLoss = meta.bestLoss;
+      this.charToId = {};
+      this.idToChar = {};
+      for (var i = 0; i < this.vocab.length; i++) {
+        this.charToId[this.vocab[i]] = i;
+        this.idToChar[i] = this.vocab[i];
+      }
+      // base64 → Uint8 → Float32Array
+      var cleanB64 = b64.replace(/[^A-Za-z0-9+\/]/g, '');
+      var bytes = new Uint8Array(Math.floor(cleanB64.length * 3 / 4));
+      var p = 0;
+      for (var i = 0; i < cleanB64.length; i += 4) {
+        var c1 = BASE64_DECODE[cleanB64[i]] || 0;
+        var c2 = BASE64_DECODE[cleanB64[i+1]] || 0;
+        var c3 = BASE64_DECODE[cleanB64[i+2]] || 0;
+        var c4 = BASE64_DECODE[cleanB64[i+3]] || 0;
+        bytes[p++] = (c1 << 2) | (c2 >> 4);
+        if (p < bytes.length) bytes[p++] = ((c2 & 15) << 4) | (c3 >> 2);
+        if (p < bytes.length) bytes[p++] = ((c3 & 3) << 6) | c4;
+      }
+      var allParams = new Float32Array(bytes.buffer, 0, meta.totalLen);
+      this.params = {};
+      for (var k = 0; k < meta.keys.length; k++) {
+        var key = meta.keys[k];
+        var off = meta.offsets[key];
+        var len = k < meta.keys.length - 1 ? meta.offsets[meta.keys[k+1]] - off : meta.totalLen - off;
+        this.params[key] = new Float32Array(allParams.subarray(off, off + len));
+      }
+      // Reinit optimizer state
+      this.optState = {};
+      for (var key2 in this.params) {
+        this.optState[key2] = {
+          m: new Float32Array(this.params[key2].length),
+          v: new Float32Array(this.params[key2].length),
+        };
+      }
+      this.optT = 0;
+      this.optBeta1 = 0.9;
+      this.optBeta2 = 0.999;
+      this.optEps = 1e-8;
+      return true;
+    } catch(e) {
+      console.error('Deserialize binary error:', e);
+      return false;
+    }
+  }
+
+  // ===== JSON序列化（兼容旧版） =====
   serialize() {
     var data = {
       config: this.config,
       vocab: this.vocab,
       vocabSize: this.vocabSize,
       trained: this.trained,
+      bestLoss: this.bestLoss || 0,
       params: {},
     };
     for (var k in this.params) {

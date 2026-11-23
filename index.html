@@ -362,7 +362,7 @@
         <div class="model-info" id="modelInfo">首次加载需下载模型，之后缓存。手搓AI需训练后使用</div>
         <!-- 手搓AI训练面板 -->
         <div id="brainPanel" style="display:none;margin-top:8px;">
-          <button class="credits-btn checkin-btn" id="trainBtn" style="width:100%;margin-bottom:6px;" onclick="startBrainTraining()">🔧 开始训练神经网络</button>
+          <button class="credits-btn checkin-btn" id="trainBtn" style="width:100%;margin-bottom:6px;" onclick="startBrainTraining()">🔁 重新训练（可选）</button>
           <div id="trainProgress" style="font-size:11px;color:var(--text-muted);"></div>
           <div style="height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;margin-top:4px;">
             <div id="trainBar" style="height:100%;background:var(--accent);width:0%;transition:width 0.3s;"></div>
@@ -824,7 +824,7 @@
       var modelInfo = document.getElementById('modelInfo');
       if (newModel === 'brain') {
         brainPanel.style.display = 'block';
-        modelInfo.textContent = '纯JavaScript神经网络，在浏览器中从零训练';
+        modelInfo.textContent = '内置预训练模型，开箱即用。也可重新训练';
         await initBrain().catch(function(e) {
           updateTrainUI('加载失败: ' + e.message);
         });
@@ -841,19 +841,44 @@
       if (!brain) {
         var BrainClass = await ensureBrain();
         brain = new BrainClass();
-        // Try load saved weights
+        // 尝试加载内置预训练权重
+        updateTrainUI('⏳ 正在加载预训练模型...');
+        var loaded = await brain.loadPretrained();
+        if (loaded && brain.trained) {
+          updateTrainUI('✅ 预训练模型已就绪，可直接对话！');
+          document.getElementById('trainBtn').textContent = '🔁 重新训练（可选）';
+          modelLoaded = true;
+          updateStatusBadge('online', '手搓AI就绪');
+          return;
+        }
+        // 尝试加载用户之前训练保存的权重
         var saved = localStorage.getItem(BRAIN_KEY);
         if (saved) {
-          if (brain.deserialize(saved)) {
-            updateTrainUI('已加载训练好的模型');
-            document.getElementById('trainBtn').textContent = '🔁 重新训练';
-            return;
+          if (saved.startsWith('{')) {
+            if (brain.deserialize(saved)) {
+              updateTrainUI('✅ 已加载训练好的模型');
+              document.getElementById('trainBtn').textContent = '🔁 重新训练';
+              modelLoaded = true;
+              updateStatusBadge('online', '手搓AI就绪');
+              return;
+            }
+          } else {
+            if (brain.deserializeBinary(saved)) {
+              updateTrainUI('✅ 已加载训练好的模型');
+              document.getElementById('trainBtn').textContent = '🔁 重新训练';
+              modelLoaded = true;
+              updateStatusBadge('online', '手搓AI就绪');
+              return;
+            }
           }
         }
+        updateTrainUI('⚠️ 预训练模型加载失败，可点击训练按钮手动训练');
       }
       if (brain && brain.trained) {
-        updateTrainUI('模型已就绪 ✓');
-        document.getElementById('trainBtn').textContent = '🔁 重新训练';
+        updateTrainUI('✅ 模型已就绪，可直接对话！');
+        document.getElementById('trainBtn').textContent = '🔁 重新训练（可选）';
+        modelLoaded = true;
+        updateStatusBadge('online', '手搓AI就绪');
       } else {
         updateTrainUI('点击上方按钮开始训练');
       }
@@ -877,12 +902,15 @@
         text.textContent = 'Epoch ' + epoch + '/' + totalEpochs + ' | Loss: ' + loss.toFixed(3) + ' | ' + Math.round(progress * 100) + '%';
       });
 
-      // Save weights
+      // Save weights (binary format)
       try {
-        var serialized = brain.serialize();
+        var serialized = brain.serializeBinary();
         localStorage.setItem(BRAIN_KEY, serialized);
       } catch(e) {
         console.warn('Failed to save brain weights:', e);
+        try {
+          showToast('存储空间不足，模型已加载但无法保存到本地');
+        } catch(e2) {}
       }
 
       brainTraining = false;

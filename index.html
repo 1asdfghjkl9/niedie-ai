@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-  <title>逆蝶AI v5.0</title>
+  <title>逆蝶AI v6.0</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -336,7 +336,7 @@
       <div class="sidebar-header">
         <span class="sidebar-logo">🦋</span>
         <span class="sidebar-title">逆蝶AI</span>
-        <span class="sidebar-version">v5.0</span>
+        <span class="sidebar-version">v6.0</span>
       </div>
 
       <button class="new-chat-btn" onclick="newConversation()">
@@ -357,7 +357,7 @@
           <option value="Phi-3.5-mini-instruct-q4f16_1-MLC">Phi 3.5 mini (2.1GB·推理强)</option>
           <option value="gemma-2-2b-it-q4f16_1-MLC">Gemma 2 2B (1.44GB·Google)</option>
           <option value="rule-based">规则模式（无需GPU）</option>
-          <option value="brain">🧠 手搓AI v5.0 (纯JS神经网络·200+训练数据)</option>
+          <option value="brain">🧠 手搓AI v6.0 (纯JS神经网络·位置编码+残差连接·250+训练数据)</option>
         </select>
         <div class="model-info" id="modelInfo">首次加载需下载模型，之后缓存。手搓AI需训练后使用</div>
         <!-- 手搓AI训练面板 -->
@@ -682,7 +682,7 @@
       var conv = getCurrentConv();
       var el = document.getElementById('messages');
       if (!conv || conv.messages.length === 0) {
-        el.innerHTML = '<div class="msg-system">🦋 逆蝶AI v5.0 — 浏览器内运行真实大语言模型 + 手搓神经网络<br>数据不出本地，完全隐私安全</div>';
+        el.innerHTML = '<div class="msg-system">🦋 逆蝶AI v6.0 — 浏览器内运行真实大语言模型 + 手搓神经网络<br>数据不出本地，完全隐私安全</div>';
         return;
       }
       el.innerHTML = conv.messages.map(function(m) {
@@ -894,7 +894,7 @@
       var BrainClass = NiedieBrain || (await ensureBrain());
       if (!brain) brain = new BrainClass();
 
-      var epochs = 120;
+      var epochs = 30;
       await brain.train(null, epochs, function(progress, loss, epoch, totalEpochs) {
         var bar = document.getElementById('trainBar');
         var text = document.getElementById('trainProgress');
@@ -1135,7 +1135,7 @@
 
       // Self intro
       if (/你是谁|你叫什么|介绍一下你自己|你是什么/.test(t))
-        return '我是逆蝶AI 🦋 一个运行在浏览器中的智能助手。我可以聊天、回答问题、写文案、做计算等。v5.0版本支持在浏览器内运行真实大语言模型，还内置了手搓神经网络！';
+        return '我是逆蝶AI 🦋 一个运行在浏览器中的智能助手。我可以聊天、回答问题、写文案、做计算等。v6.0版本支持在浏览器内运行真实大语言模型，还内置了手搓神经网络（位置编码+残差连接+核采样）！';
 
       // Credits
       if (/积分|credit/.test(t)) {

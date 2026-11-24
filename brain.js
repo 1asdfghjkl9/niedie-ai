@@ -29,6 +29,7 @@
 //        对数概率累积保证数值稳定、beam选择后继续采样
 //  v8.2: beam search长度归一化(避免短序列偏好)、
 //        自适应top-p(高置信度时收窄、低置信度时放宽)
+//  v8.3: top-k退火(前期大k增多样性、后期小k增连贯)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1715,8 +1716,12 @@ export class NiedieBrain {
           adaptTopP = Math.min(0.98, C.topP + 0.05); // uncertain → slightly wider
         }
 
+        // v8.3: Top-k annealing — start with larger k for diversity, shrink for coherence
+        var progress = Math.min(t / maxLen, 1.0);
+        var adaptTopK = Math.max(5, Math.round(C.topK * (1.0 - 0.5 * progress)));
+
         // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
-        nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, adaptTopP,
+        nextId = this.sampleTopK(scaled, adaptTopK, C.repetitionPenalty, recentChars, adaptTopP,
           C.frequencyPenalty, outputIds, C.noRepeatNgram, t);
         
         // v8.0: Max repetition count — if char appeared 3+ times recently, force different
@@ -1730,7 +1735,7 @@ export class NiedieBrain {
             if (recentChars[i] && recentChars[i] >= 3) { altProbs[i] = 0; continue; }
             altProbs[i] = scaled[i];
           }
-          nextId = this.sampleTopK(altProbs, C.topK, C.repetitionPenalty * 2, recentChars, adaptTopP,
+          nextId = this.sampleTopK(altProbs, adaptTopK, C.repetitionPenalty * 2, recentChars, adaptTopP,
             C.frequencyPenalty * 2, outputIds, C.noRepeatNgram, t);
         }
       }

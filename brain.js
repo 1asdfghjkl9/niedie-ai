@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v8.0 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v8.1 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -25,6 +25,8 @@
 //        标点模式检测(防止。，。，循环)、最低生成长度提升至8
 //  v8.0: 句子级后处理(分割-清理-重组)、动态温度(前段低温后段略高)、
 //        单字符最大重复次数限制(3次)、生成质量评分
+//  v8.1: 束搜索解码(beam width=3, prefix=5)替代贪心选择、
+//        对数概率累积保证数值稳定、beam选择后继续采样
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1574,6 +1576,69 @@ export class NiedieBrain {
     return bestId >= 0 ? bestId : 2; // fallback to first non-banned token
   }
 
+  // ===== v8.1: 束搜索解码（beam search）=====
+  // 返回最优beam的token id序列和对应输出字符串
+  beamSearch(genContext, beamWidth, beamLen) {
+    var C = this.config;
+    // Each beam: { ids: [], logProb: 0, text: '', context: genContext }
+    var beams = [{ ids: [], logProb: 0, text: '', context: genContext }];
+
+    for (var step = 0; step < beamLen; step++) {
+      var candidates = [];
+
+      for (var bi = 0; bi < beams.length; bi++) {
+        var beam = beams[bi];
+        // Build context for this beam
+        var fullCtx = beam.context + beam.text;
+        var ctxStr = fullCtx.slice(-C.contextLen);
+        if (ctxStr.length < C.contextLen) {
+          ctxStr = '\n'.repeat(C.contextLen - ctxStr.length) + ctxStr;
+        }
+        var inputIds = this.encode(ctxStr);
+        var fwd = this.forward(inputIds, false);
+        var probs = softmax(fwd.logits);
+
+        // Get top candidates with ban filtering
+        var scored = [];
+        for (var i = 0; i < probs.length; i++) {
+          if (i === 0 || i === 1) continue;
+          var ch = this.idToChar[i];
+          if (ch >= '0' && ch <= '9') continue;
+          if (ch === '\n') continue;
+          if (step < 3 && ch === '：') continue;
+          if (probs[i] > 0) {
+            scored.push({ id: i, logProb: Math.log(probs[i] + 1e-10), ch: ch });
+          }
+        }
+        scored.sort(function(a, b) { return b.logProb - a.logProb; });
+
+        // Take top beamWidth candidates from this beam
+        var nCand = Math.min(beamWidth, scored.length);
+        for (var ci = 0; ci < nCand; ci++) {
+          candidates.push({
+            ids: beam.ids.concat([scored[ci].id]),
+            logProb: beam.logProb + scored[ci].logProb,
+            text: beam.text + scored[ci].ch,
+            context: beam.context
+          });
+        }
+      }
+
+      // Sort all candidates by cumulative log probability and keep top beamWidth
+      candidates.sort(function(a, b) { return b.logProb - a.logProb; });
+      beams = candidates.slice(0, beamWidth);
+      
+      // Safety: if no candidates (all banned), stop early
+      if (beams.length === 0) break;
+    }
+
+    // Return best beam, or empty if no candidates
+    if (beams.length === 0) {
+      return { ids: [], text: '' };
+    }
+    return { ids: beams[0].ids, text: beams[0].text };
+  }
+
   // ===== 生成文本 =====
   generate(prompt, maxLen, temperature) {
     if (!this.trained) return '模型尚未训练，请先点击训练按钮。';
@@ -1589,23 +1654,28 @@ export class NiedieBrain {
     var recentChars = {};
     var recentQueue = [];
 
+    // v8.1: Beam search for stable prefix
+    var beamResult = this.beamSearch(genContext, 3, 5);
+    var beamIds = beamResult.ids;
+
     for (var t = 0; t < maxLen; t++) {
-      var fullCtx = genContext + output;
-      var ctxStr = fullCtx.slice(-C.contextLen);
-      if (ctxStr.length < C.contextLen) {
-        ctxStr = '\n'.repeat(C.contextLen - ctxStr.length) + ctxStr;
-      }
-      var inputIds = this.encode(ctxStr);
-
-      var fwd = this.forward(inputIds, false);
-      var probs = softmax(fwd.logits);
-
-      // v7.8: Hybrid decoding — greedy for first 3 tokens, then temperature sampling
       var nextId;
-      if (t < 3) {
-        // Greedy: pick highest probability token (with ban on special/digit/colon)
-        nextId = this.greedySelect(probs, t);
+      
+      // v8.1: Beam search for first 5 tokens, then temperature sampling
+      if (t < 5 && beamIds[t] !== undefined) {
+        // Beam search already done before the loop; use pre-computed ids
+        nextId = beamIds[t];
       } else {
+        var fullCtx = genContext + output;
+        var ctxStr = fullCtx.slice(-C.contextLen);
+        if (ctxStr.length < C.contextLen) {
+          ctxStr = '\n'.repeat(C.contextLen - ctxStr.length) + ctxStr;
+        }
+        var inputIds = this.encode(ctxStr);
+
+        var fwd = this.forward(inputIds, false);
+        var probs = softmax(fwd.logits);
+
         // v8.0: Dynamic temperature — start low, gradually increase for variety
         var dynTemp = temperature * (1.0 + 0.3 * Math.min(t / 30, 1.0));
         // Temperature scaling

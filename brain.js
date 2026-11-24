@@ -39,6 +39,8 @@
 //  v9.0: 置信度追踪早停(连续低置信度时提前终止、避免低质量输出)
 //  v9.1: 后处理增强(移除独立标点句、移除开头连词、空输出保护)
 //  v9.2: beam search前缀扩展(5→8 token)、更长稳定起始序列
+//  v9.3: 重复检测窗口扩展(20→30)、更全面的重复防护
+//  v9.4: 后处理末尾补句号(无句末标点时添加。)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1595,7 +1597,7 @@ export class NiedieBrain {
     var decayRecent = {};
     for (var qi = 0; qi < recentQueue.length; qi++) {
       var tokenId = recentQueue[qi];
-      var distance = recentQueue.length - qi; // 1=most recent, 20=oldest
+      var distance = recentQueue.length - qi; // 1=most recent, 30=oldest
       var weight = Math.exp(-0.15 * (distance - 1)); // 1.0→0.06
       decayRecent[tokenId] = (decayRecent[tokenId] || 0) + weight;
     }
@@ -1806,7 +1808,7 @@ export class NiedieBrain {
 
       // Update repetition tracking (last 20 chars) — v7.6: expanded from 15 to 20
       recentQueue.push(nextId);
-      if (recentQueue.length > 20) {
+      if (recentQueue.length > 30) { // v9.3: expanded from 20 to 30
         var old = recentQueue.shift();
         recentChars[old] = (recentChars[old] || 0) - 1;
         if (recentChars[old] <= 0) delete recentChars[old];
@@ -1953,6 +1955,14 @@ export class NiedieBrain {
     // v9.1: Empty output protection — return placeholder if all cleaning removed content
     if (!result || !/[^\s。，！？、；：]/.test(result)) {
       return '我理解你的意思。';
+    }
+    
+    // v9.4: Add trailing period if missing and output is long enough
+    if (result.length >= 4) {
+      var lastCh = result[result.length - 1];
+      if (lastCh !== '。' && lastCh !== '！' && lastCh !== '？' && lastCh !== '～' && lastCh !== '…') {
+        result += '。';
+      }
     }
     
     return result;

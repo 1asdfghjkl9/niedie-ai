@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v7.6 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v7.7 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -17,6 +17,8 @@
 //  v7.5: batchSize=8增加梯度更新(102→505次)、806条数据(516+290额外)
 //  v7.6: 生成优化 — 禁止"："作为开头token、增强重复惩罚(1.5)、
 //        数字惩罚、no-repeat-ngram(4)、扩大重复窗口(20)
+//  v7.7: 完全禁止数字token生成、连续标点清理、最小有效长度检查、
+//        generate返回后后处理(去重复标点、修剪首尾)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1473,10 +1475,11 @@ export class NiedieBrain {
       } else {
         adjusted[i] = probs[i] / penalty;
       }
-      // v7.6: Digit penalty — reduce probability of digit characters by 50%
+      // v7.7: Complete digit ban — digits should never appear in conversational responses
       var ch = this.idToChar[i];
       if (ch >= '0' && ch <= '9') {
-        adjusted[i] *= 0.5;
+        adjusted[i] = 0;
+        continue;
       }
     }
 
@@ -1608,7 +1611,37 @@ export class NiedieBrain {
       }
     }
 
-    return output.trim();
+    // v7.7: Post-processing — clean up generated text
+    return this.postProcess(output);
+  }
+
+  // ===== v7.7: 后处理 — 清理生成文本 =====
+  postProcess(text) {
+    if (!text) return '';
+    var result = text.trim();
+    
+    // Remove consecutive duplicate punctuation (e.g., "。。。" → "。")
+    result = result.replace(/([。，！？、；：])\1+/g, '$1');
+    
+    // Remove leading punctuation
+    result = result.replace(/^[。，、；：]+/, '');
+    
+    // Remove trailing partial words (single char followed by punctuation repeated)
+    result = result.replace(/(.)。\1。\1/g, '$1。');
+    
+    // Ensure at least one non-punctuation character
+    var hasContent = /[^\s。，！？、；：]/.test(result);
+    if (!hasContent) return '';
+    
+    // Trim to last sentence-ending punctuation if output is very long
+    if (result.length > 50) {
+      var lastEnd = Math.max(result.lastIndexOf('。'), result.lastIndexOf('！'), result.lastIndexOf('？'));
+      if (lastEnd > 10) {
+        result = result.substring(0, lastEnd + 1);
+      }
+    }
+    
+    return result;
   }
 
   // ===== 二进制序列化（紧凑base64，体积缩小6倍） =====

@@ -36,6 +36,7 @@
 //  v8.7: beam search多样性惩罚(同步骤已选token被降权)、鼓励不同路径探索
 //  v8.8: 频率惩罚改用sqrt(温和惩罚高频token、允许常见词自然复用)
 //  v8.9: 循环检测早停(检测重复模式并提前终止生成)
+//  v9.0: 置信度追踪早停(连续低置信度时提前终止、避免低质量输出)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1698,6 +1699,10 @@ export class NiedieBrain {
     var recentChars = {};
     var recentQueue = [];
 
+    // v9.0: Confidence tracking for early stopping
+    var confidenceHistory = [];
+    var lowConfidenceStreak = 0;
+
     // v8.1: Beam search for stable prefix
     var beamResult = this.beamSearch(genContext, 3, 5);
     var beamIds = beamResult.ids;
@@ -1775,6 +1780,25 @@ export class NiedieBrain {
       if (ch === '\n' && output.length > C.minGenLen) {
         break;
       }
+      
+      // v9.0: Track confidence for early stopping
+      var usedBeam = (t < 5 && beamIds[t] !== undefined);
+      if (usedBeam) {
+        confidenceHistory.push(0.5); // default for beam search tokens
+        lowConfidenceStreak = 0;
+      } else {
+        confidenceHistory.push(maxProb);
+        if (maxProb < 0.15) {
+          lowConfidenceStreak++;
+        } else {
+          lowConfidenceStreak = 0;
+        }
+      }
+      // v9.0: Early stop if 5+ consecutive low-confidence tokens
+      if (lowConfidenceStreak >= 5 && output.length > C.minGenLen) {
+        break;
+      }
+      
       output += ch;
       outputIds.push(nextId);
 

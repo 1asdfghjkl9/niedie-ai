@@ -33,6 +33,7 @@
 //  v8.4: 衰减式重复惩罚(近期token惩罚大、远期token惩罚小)
 //  v8.5: 句子结束概率随长度递增、动态温度下限(防过低)、后处理移除末尾不完整句
 //  v8.6: no-repeat-ngram收紧(4→3)、后处理去重复句子、合并过短连续句子
+//  v8.7: beam search多样性惩罚(同步骤已选token被降权)、鼓励不同路径探索
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1605,6 +1606,7 @@ export class NiedieBrain {
 
     for (var step = 0; step < beamLen; step++) {
       var candidates = [];
+      var usedTokensThisStep = {}; // v8.7: track tokens used by beams at this step
 
       for (var bi = 0; bi < beams.length; bi++) {
         var beam = beams[bi];
@@ -1627,7 +1629,12 @@ export class NiedieBrain {
           if (ch === '\n') continue;
           if (step < 3 && ch === '：') continue;
           if (probs[i] > 0) {
-            scored.push({ id: i, logProb: Math.log(probs[i] + 1e-10), ch: ch });
+            var lp = Math.log(probs[i] + 1e-10);
+            // v8.7: Diversity penalty — reduce logProb for tokens already chosen by previous beams
+            if (usedTokensThisStep[i]) {
+              lp -= 0.5; // diversity penalty
+            }
+            scored.push({ id: i, logProb: lp, ch: ch });
           }
         }
         scored.sort(function(a, b) { return b.logProb - a.logProb; });
@@ -1635,6 +1642,7 @@ export class NiedieBrain {
         // Take top beamWidth candidates from this beam
         var nCand = Math.min(beamWidth, scored.length);
         for (var ci = 0; ci < nCand; ci++) {
+          usedTokensThisStep[scored[ci].id] = true; // mark as used
           candidates.push({
             ids: beam.ids.concat([scored[ci].id]),
             logProb: beam.logProb + scored[ci].logProb,

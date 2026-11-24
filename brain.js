@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v7.7 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v7.8 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -19,6 +19,8 @@
 //        数字惩罚、no-repeat-ngram(4)、扩大重复窗口(20)
 //  v7.7: 完全禁止数字token生成、连续标点清理、最小有效长度检查、
 //        generate返回后后处理(去重复标点、修剪首尾)
+//  v7.8: 混合解码策略 — 前3token贪心解码(确保开头合理) +
+//        后续低温采样、增强上下文构建(包含完整对话历史)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1548,6 +1550,26 @@ export class NiedieBrain {
     return topIndices[topIndices.length - 1];
   }
 
+  // ===== v7.8: 贪心选择（带禁止token过滤） =====
+  greedySelect(probs, genStep) {
+    var bestId = -1;
+    var bestProb = -1;
+    for (var i = 0; i < probs.length; i++) {
+      // Skip banned tokens: <pad>, <unk>, digits, newlines
+      if (i === 0 || i === 1) continue;
+      var ch = this.idToChar[i];
+      if (ch >= '0' && ch <= '9') continue;
+      if (ch === '\n') continue;
+      // Ban "：" for first 3 tokens
+      if (genStep < 3 && ch === '：') continue;
+      if (probs[i] > bestProb) {
+        bestProb = probs[i];
+        bestId = i;
+      }
+    }
+    return bestId >= 0 ? bestId : 2; // fallback to first non-banned token
+  }
+
   // ===== 生成文本 =====
   generate(prompt, maxLen, temperature) {
     if (!this.trained) return '模型尚未训练，请先点击训练按钮。';
@@ -1574,19 +1596,25 @@ export class NiedieBrain {
       var fwd = this.forward(inputIds, false);
       var probs = softmax(fwd.logits);
 
-      // Temperature scaling
-      var scaled = new Float32Array(probs.length);
-      for (var i = 0; i < probs.length; i++) {
-        scaled[i] = Math.pow(probs[i], 1.0 / temperature);
-      }
-      var sum = 0;
-      for (var i = 0; i < scaled.length; i++) sum += scaled[i];
-      for (var i = 0; i < scaled.length; i++) scaled[i] /= sum;
+      // v7.8: Hybrid decoding — greedy for first 3 tokens, then temperature sampling
+      var nextId;
+      if (t < 3) {
+        // Greedy: pick highest probability token (with ban on special/digit/colon)
+        nextId = this.greedySelect(probs, t);
+      } else {
+        // Temperature scaling
+        var scaled = new Float32Array(probs.length);
+        for (var i = 0; i < probs.length; i++) {
+          scaled[i] = Math.pow(probs[i], 1.0 / temperature);
+        }
+        var sum = 0;
+        for (var i = 0; i < scaled.length; i++) sum += scaled[i];
+        for (var i = 0; i < scaled.length; i++) scaled[i] /= sum;
 
-      // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
-      // v7.6: pass genStep (t) to ban "：" at generation start
-      var nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP,
-        C.frequencyPenalty, outputIds, C.noRepeatNgram, t);
+        // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
+        nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP,
+          C.frequencyPenalty, outputIds, C.noRepeatNgram, t);
+      }
 
       var ch = this.idToChar[nextId];
       if (ch === '\n' && output.length > C.minGenLen) {

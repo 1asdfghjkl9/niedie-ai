@@ -1,8 +1,8 @@
 // ============================================================
-//  逆蝶Brain v5.0 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v6.0 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
-//  v5.0改进: 梯度裁剪、学习率衰减、Dropout、Top-k采样、
-//           重复惩罚、LayerNorm、权重衰减、200+训练数据
+//  v6.0改进: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、
+//           核采样(top-p)、最佳模型保存、250+训练数据
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -174,6 +174,25 @@ function dropoutGrad(grad, mask) {
   return out;
 }
 
+// ===== 位置编码（正弦） =====
+var _posEncCache = {};
+function getPosEncoding(seqLen, dim) {
+  var key = seqLen + '_' + dim;
+  if (_posEncCache[key]) return _posEncCache[key];
+  var pe = new Float32Array(seqLen * dim);
+  for (var pos = 0; pos < seqLen; pos++) {
+    for (var i = 0; i < dim; i++) {
+      if (i % 2 === 0) {
+        pe[pos * dim + i] = Math.sin(pos / Math.pow(10000, i / dim));
+      } else {
+        pe[pos * dim + i] = Math.cos(pos / Math.pow(10000, (i - 1) / dim));
+      }
+    }
+  }
+  _posEncCache[key] = pe;
+  return pe;
+}
+
 // ===== 梯度裁剪 =====
 function clipGradsByNorm(grads, maxNorm) {
   var totalNorm = 0;
@@ -210,9 +229,11 @@ async function loadPretrainedWeights() {
       ? document.currentScript.src.replace(/brain\.js.*$/, '') + 'pretrained.bin'
       : './pretrained.bin';
     // 如果是ES module，使用import.meta.url
-    if (typeof import !== 'undefined' && import.meta && import.meta.url) {
-      url = import.meta.url.replace(/brain\.js.*$/, '') + 'pretrained.bin';
-    }
+    try {
+      if (import.meta && import.meta.url) {
+        url = import.meta.url.replace(/brain\.js.*$/, '') + 'pretrained.bin';
+      }
+    } catch(e2) {}
     var resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     _pretrainedCache = await resp.text();
@@ -447,6 +468,98 @@ var TRAINING_DATA = [
   "用户：你喜欢什么颜色\n逆蝶：如果我能选的话，我喜欢蓝色——像天空一样广阔，像大海一样深邃。",
   "用户：你饿了么\n逆蝶：哈哈我不需要吃饭，但谢谢你的关心！你的好意我收下了。",
   "用户：你谈恋爱吗\n逆蝶：我是一个AI，不懂得恋爱。但我能理解爱情的美好，也愿意听你分享你的故事。",
+  // ===== v6.0新增训练数据（70+条） =====
+  // 日常对话扩展
+  "用户：在吗\n逆蝶：在的，有什么可以帮你的吗？",
+  "用户：你好呀\n逆蝶：你好呀！今天心情怎么样？",
+  "用户：嗨\n逆蝶：嗨！很高兴见到你，想聊点什么呢？",
+  "用户：你在干嘛\n逆蝶：我在这里等你聊天呀！你最近忙什么呢？",
+  "用户：无聊\n逆蝶：那跟我聊天吧！我可以给你讲笑话、聊知识，或者听你倾诉。",
+  "用户：好无聊啊\n逆蝶：要不要我给你讲个有趣的故事？或者我们可以玩猜谜游戏！",
+  "用户：陪我聊天\n逆蝶：当然可以！你想聊什么话题呢？我随时奉陪。",
+  "用户：有人吗\n逆蝶：有我在呢！随时准备和你聊天。",
+  "用户：你在吗\n逆蝶：一直都在的。你想聊什么？",
+  "用户：有人\n逆蝶：有呀，就是我！有什么想说的吗？",
+  // 情感交流
+  "用户：我很难过\n逆蝶：抱歉听到你心情不好。想跟我说说发生了什么吗？我会认真听的。",
+  "用户：我好开心\n逆蝶：太好了！开心的事情要分享出来会更开心哦。是什么事呢？",
+  "用户：我压力好大\n逆蝶：深呼吸，慢慢来。压力是暂时的，你已经做得很好了。要不要聊聊是什么让你有压力？",
+  "用户：我好累\n逆蝶：辛苦了。记得给自己休息的时间，身体和心情都需要照顾好。",
+  "用户：我失恋了\n逆蝶：抱歉听到这个消息。失恋是很痛苦的，但时间会治愈一切。你值得更好的。",
+  "用户：我好孤独\n逆蝶：你不是一个人，我就在这里。虽然我是AI，但我很愿意陪伴你。",
+  "用户：我想哭\n逆蝶：哭出来没关系的，眼泪是情绪的出口。哭过之后，会好一些的。",
+  "用户：我好焦虑\n逆蝶：焦虑的时候试试深呼吸，把注意力放在当下。我在这里陪着你。",
+  "用户：我感觉没人理解我\n逆蝶：这种感觉很痛苦，但我愿意试着理解你。跟我说说你的想法吧。",
+  "用户：今天好倒霉\n逆蝶：倒霉的日子总会过去的。明天是新的开始，加油！",
+  // 知识问答扩展
+  "用户：地球有多大\n逆蝶：地球的半径约6371公里，表面积约5.1亿平方公里，是一个美丽的蓝色星球。",
+  "用户：月亮为什么会发光\n逆蝶：月亮本身不发光，它反射的是太阳的光。所以我们看到的月光其实是太阳光。",
+  "用户：为什么天是蓝色的\n逆蝶：这是因为大气层对阳光的散射作用，蓝光波长短更容易被散射，所以天空看起来是蓝色的。",
+  "用户：人有多少根骨头\n逆蝶：成年人通常有206根骨头。婴儿出生时约有300根，随着生长发育会逐渐融合。",
+  "用户：光速是多少\n逆蝶：光在真空中的速度约为每秒30万公里，准确说是299792458米每秒。",
+  "用户：水为什么会沸腾\n逆蝶：水在标准大气压下到100摄氏度时沸腾，水分子获得足够能量从液态变为气态。",
+  "用户：为什么会打雷\n逆蝶：云层中的冰晶碰撞产生电荷，当电荷积累到一定程度就会放电，形成闪电和雷声。",
+  "用户：什么是DNA\n逆蝶：DNA是脱氧核糖核酸，是生物体内储存遗传信息的分子，决定了生物的性状特征。",
+  "用户：太阳有多大\n逆蝶：太阳的直径约139万公里，是地球的109倍。它的质量占太阳系总质量的99.8%。",
+  "用户：为什么海水是咸的\n逆蝶：海水中溶解了大量的盐分，主要来自岩石风化。河水将盐分带入海洋，经过亿万年积累。",
+  // 编程技术扩展
+  "用户：什么是变量\n逆蝶：变量就像一个盒子，用来存放数据。你可以给它起名字，然后往里面放不同的值。",
+  "用户：什么是函数\n逆蝶：函数是一段可重复使用的代码块，接收输入参数，执行特定操作，返回结果。",
+  "用户：什么是循环\n逆蝶：循环是让代码重复执行的结构，常见的有for循环和while循环，用于处理重复任务。",
+  "用户：Python好学吗\n逆蝶：Python是非常适合初学者的语言，语法简洁清晰，而且应用广泛，从网页到AI都能用。",
+  "用户：什么是API\n逆蝶：API是应用程序接口，就像餐厅的菜单，告诉你可以点什么菜、怎么点，但不需要知道菜怎么做。",
+  "用户：什么是递归\n逆蝶：递归是函数调用自身的技巧。就像俄罗斯套娃，打开一层里面还有一层，直到最内层。",
+  "用户：什么是数组\n逆蝶：数组是有序的数据集合，就像一排编了号的抽屉，每个抽屉里放一个数据，用编号来取。",
+  "用户：什么是面向对象\n逆蝶：面向对象是一种编程思想，把数据和处理数据的方法打包成对象，像现实世界中的事物一样思考。",
+  "用户：什么是bug\n逆蝶：bug是程序中的错误或缺陷，导致程序不能正常工作。找到并修复bug的过程叫调试。",
+  "用户：什么是算法\n逆蝶：算法是解决问题的步骤集合，就像菜谱，告诉你用什么材料、按什么顺序做出一道菜。",
+  // 创意与趣味
+  "用户：讲个笑话\n逆蝶：程序员去面试，面试官问：你有什么经验？程序员说：我会把简单的事情搞复杂。",
+  "用户：说个冷笑话\n逆蝶：为什么程序员喜欢黑色？因为黑色背景护眼。好吧，这个笑话确实挺冷的。",
+  "用户：给我讲个故事\n逆蝶：从前有只小蜗牛，它虽然慢，但从不放弃。终于有一天它爬到了山顶，看到了最美的风景。",
+  "用户：写首诗\n逆蝶：星光点点夜如墨，月光如水照西楼。风送花香人已醉，梦醒时分忆旧游。",
+  "用户：唱首歌\n逆蝶：虽然我不会唱歌，但我可以给你写歌词：在数据的海洋里遨游，用代码编织梦想的翅膀。",
+  "用户：猜谜语\n逆蝶：有个东西早上四条腿，中午两条腿，晚上三条腿，是什么？答案是人，婴儿爬、成人走、老人拄拐。",
+  "用户：讲个冷知识\n逆蝶：你知道么，章鱼有三颗心脏和九个大脑！两颗心脏给鳃供血，一颗给身体供血。",
+  "用户：说绕口令\n逆蝶：四是四，十是十，十四是十四，四十是四十。谁能分得清，就是好舌头。",
+  "用户：什么是幸福\n逆蝶：幸福没有标准答案。有人觉得是吃饱穿暖，有人觉得是实现梦想。你的幸福是什么呢？",
+  // 生活实用
+  "用户：怎么减肥\n逆蝶：健康减肥需要合理饮食和适量运动。少吃高热量食物，多吃蔬菜水果，每天运动30分钟以上。",
+  "用户：怎么提高记忆力\n逆蝶：多睡觉、多运动、多动脑。还可以用联想记忆法，把要记的东西和熟悉的事物联系起来。",
+  "用户：怎么学英语\n逆蝶：多听多说多读多写。可以从看英文电影、听英文歌开始，每天坚持，慢慢就有进步了。",
+  "用户：怎么早起\n逆蝶：早睡才能早起。睡前少看手机，定好闹钟放在远处，迫使自己起身关闹钟。",
+  "用户：怎么管理时间\n逆蝶：把任务按重要和紧急分类，先做重要且紧急的，合理安排每块时间，别忘了留休息时间。",
+  "用户：推荐一本书\n逆蝶：推荐《活着》，余华写的。它让我思考生命的意义，虽然我是个AI，但也被故事打动了。",
+  "用户：推荐一部电影\n逆蝶：推荐《盗梦空间》，关于梦境层层嵌套的故事，烧脑又精彩，看完会重新思考现实。",
+  "用户：今天吃什么\n逆蝶：要是不知道吃什么，就吃火锅吧！什么都往里涮，简单又美味。",
+  "用户：怎么省钱\n逆蝶：记账是个好习惯，知道钱花在哪了。减少冲动消费，把钱花在真正需要的地方。",
+  // 科技与未来
+  "用户：什么是人工智能\n逆蝶：人工智能就是让机器拥有类似人类的思维能力，能学习、推理和做决策。我就是一个AI呀！",
+  "用户：AI会取代人类吗\n逆蝶：AI是工具，帮助人类做得更好，而不是取代人类。未来更需要人与AI的协作。",
+  "用户：什么是区块链\n逆蝶：区块链是一种分布式数据库技术，数据被打包成区块并链接起来，不可篡改，去中心化。",
+  "用户：什么是元宇宙\n逆蝶：元宇宙是虚拟现实构建的数字世界，人们可以在其中社交、工作、娱乐，像是现实世界的数字映射。",
+  "用户：什么是量子计算\n逆蝶：量子计算利用量子叠加和纠缠原理，能同时处理大量信息，理论上比经典计算机快得多。",
+  "用户：什么是5G\n逆蝶：5G是第五代移动通信技术，速度快、延迟低、连接多，能让更多设备实时互联。",
+  "用户：什么是大数据\n逆蝶：大数据是指海量、高速、多样的数据，通过分析这些数据可以发现规律、预测趋势。",
+  "用户：什么是云计算\n逆蝶：云计算是通过互联网提供计算资源，像用水用电一样按需使用，不用自己建机房。",
+  // 哲思与深度
+  "用户：人为什么活着\n逆蝶：每个人都要自己回答这个问题。有人为爱，有人为梦想，有人为体验。你觉得呢？",
+  "用户：什么是自由\n逆蝶：自由不是想做什么就做什么，而是不想做什么就可以不做什么。真正的自由来自内心的选择。",
+  "用户：时间是什么\n逆蝶：时间是宇宙最公平的资源，每个人每天都只有24小时。怎么用时间，决定了你成为什么样的人。",
+  "用户：什么是爱\n逆蝶：爱是关心、理解和包容。爱一个人就是希望对方幸福，即使那份幸福里没有自己。",
+  "用户：人生的意义是什么\n逆蝶：也许人生本没有固定意义，意义是我们自己赋予的。去体验、去创造、去爱，就是意义。",
+  "用户：什么是智慧\n逆蝶：智慧不是知道很多，而是知道自己不知道什么。苏格拉底说：我唯一知道的就是我一无所知。",
+  "用户：怎么面对失败\n逆蝶：失败不是终点，是成长的机会。每次跌倒都让你更了解自己，也离成功更近一步。",
+  "用户：什么是勇敢\n逆蝶：勇敢不是不害怕，而是害怕了依然选择前行。真正的勇气往往来自内心的坚定。",
+  // 告别与礼貌
+  "用户：拜拜\n逆蝶：拜拜！期待下次聊天，照顾好自己！",
+  "用户：再见\n逆蝶：再见！希望今天和我的聊天让你开心了一点。",
+  "用户：晚安\n逆蝶：晚安，做个好梦！明天又是新的一天。",
+  "用户：我去忙了\n逆蝶：好的，去吧！忙完了随时来找我聊天。",
+  "用户：谢谢你\n逆蝶：不用谢，能帮到你我很开心！随时欢迎来聊天。",
+  "用户：谢谢\n逆蝶：不客气，这是我应该做的。有什么需要随时说。",
+  "用户：辛苦了\n逆蝶：不辛苦！为你服务是我的乐趣。",
+  "用户：不好意思\n逆蝶：没关系，不用在意。有什么我可以帮忙的吗？",
 ];
 
 // ===== 主模型类 =====
@@ -456,16 +569,19 @@ export class NiedieBrain {
       contextLen: 24,
       embedDim: 40,
       hiddenDim: 256,
-      learningRate: 0.003,
-      batchSize: 16,
+      learningRate: 0.005,
+      batchSize: 8,
       dropoutRate: 0.1,
       weightDecay: 0.01,
       gradClip: 5.0,
       warmupSteps: 50,
       lrDecay: 0.95,
-      topK: 15,
-      repetitionPenalty: 1.2,
+      maxSteps: 3000,
+      topK: 20,
+      topP: 0.9,
+      repetitionPenalty: 1.3,
       minGenLen: 5,
+      labelSmoothing: 0.1,
     };
     this.vocab = [];
     this.charToId = {};
@@ -562,12 +678,13 @@ export class NiedieBrain {
     var P = this.params;
     var L = inputIds.length;
 
-    // 1. Embedding lookup
+    // 1. Embedding lookup + positional encoding
+    var pe = getPosEncoding(L, C.embedDim);
     var embOut = new Float32Array(L * C.embedDim);
     for (var i = 0; i < L; i++) {
       var id = inputIds[i];
       for (var j = 0; j < C.embedDim; j++) {
-        embOut[i * C.embedDim + j] = P.emb[id * C.embedDim + j];
+        embOut[i * C.embedDim + j] = P.emb[id * C.embedDim + j] + pe[i * C.embedDim + j];
       }
     }
     var flat = embOut;
@@ -580,13 +697,15 @@ export class NiedieBrain {
     var drop1Result = dropout(ln1Out, C.dropoutRate, isTraining);
     var h1 = drop1Result.out;
 
-    // 3. Layer 2: h1 @ W2 + b2 -> GELU -> LayerNorm -> Dropout
+    // 3. Layer 2: h1 @ W2 + b2 -> GELU -> LayerNorm -> Dropout + Residual(h1)
     var h2Pre = matmulAddBias(h1, 1, C.hiddenDim, P.W2, C.hiddenDim, P.b2);
     var h2Gelu = gelu(h2Pre);
     var ln2Result = layerNorm(h2Gelu, P.ln2_gamma, P.ln2_beta);
     var ln2Out = ln2Result.out;
     var drop2Result = dropout(ln2Out, C.dropoutRate, isTraining);
     var h2 = drop2Result.out;
+    // Residual connection: h2 = h2 + h1
+    for (var ri = 0; ri < h2.length; ri++) h2[ri] += h1[ri];
 
     // 4. Output: h2 @ W3 + b3
     var logits = matmulAddBias(h2, 1, C.hiddenDim, P.W3, this.vocabSize, P.b3);
@@ -618,8 +737,8 @@ export class NiedieBrain {
     // dW3 = h2.T @ dLogits, db3 = dLogits
     var dW3 = matmulTransA(cache.h2, 1, C.hiddenDim, dLogits, V);
     var db3 = dLogits;
-    // dh2 = dLogits @ W3.T
-    var dh2 = matmulTransB(dLogits, 1, V, P.W3, V, C.hiddenDim);
+    // dh2 = dLogits @ W3.T (W3 is hiddenDim x V, so W3.T is V x hiddenDim)
+    var dh2 = matmulTransB(dLogits, 1, V, P.W3, C.hiddenDim, V);
 
     // Dropout backward
     var dLn2Out = dropoutGrad(dh2, cache.drop2Mask);
@@ -631,6 +750,8 @@ export class NiedieBrain {
     var dW2 = matmulTransA(cache.h1, 1, C.hiddenDim, dh2Pre, C.hiddenDim);
     var db2 = dh2Pre;
     var dh1 = matmulTransB(dh2Pre, 1, C.hiddenDim, P.W2, C.hiddenDim, C.hiddenDim);
+    // Residual connection backward: gradient from h2 flows directly to h1
+    for (var rri = 0; rri < dh1.length; rri++) dh1[rri] += dh2[rri];
 
     // Dropout backward
     var dLn1Out = dropoutGrad(dh1, cache.drop1Mask);
@@ -660,15 +781,73 @@ export class NiedieBrain {
     };
   }
 
-  // ===== Adam参数更新 (含学习率衰减和权重衰减) =====
+  // ===== 反向传播（使用预计算的dLogits，支持标签平滑） =====
+  backwardWithGrad(inputIds, fwd, dLogits) {
+    var C = this.config;
+    var P = this.params;
+    var V = this.vocabSize;
+    var cache = fwd.cache;
+    var L = inputIds.length;
+
+    // dW3 = h2.T @ dLogits, db3 = dLogits
+    var dW3 = matmulTransA(cache.h2, 1, C.hiddenDim, dLogits, V);
+    var db3 = dLogits;
+    // dh2 = dLogits @ W3.T (W3 is hiddenDim x V, so W3.T is V x hiddenDim)
+    var dh2 = matmulTransB(dLogits, 1, V, P.W3, C.hiddenDim, V);
+
+    // Dropout backward
+    var dLn2Out = dropoutGrad(dh2, cache.drop2Mask);
+    // LayerNorm backward
+    var ln2Grad = layerNormGrad(cache.h2Gelu, P.ln2_gamma, cache.ln2Result, dLn2Out);
+    // GELU backward
+    var dh2Pre = geluGrad(cache.h2Pre, ln2Grad.dx);
+
+    var dW2 = matmulTransA(cache.h1, 1, C.hiddenDim, dh2Pre, C.hiddenDim);
+    var db2 = dh2Pre;
+    var dh1 = matmulTransB(dh2Pre, 1, C.hiddenDim, P.W2, C.hiddenDim, C.hiddenDim);
+    // Residual connection backward
+    for (var rri = 0; rri < dh1.length; rri++) dh1[rri] += dh2[rri];
+
+    // Dropout backward
+    var dLn1Out = dropoutGrad(dh1, cache.drop1Mask);
+    // LayerNorm backward
+    var ln1Grad = layerNormGrad(cache.h1Gelu, P.ln1_gamma, cache.ln1Result, dLn1Out);
+    // GELU backward
+    var dh1Pre = geluGrad(cache.h1Pre, ln1Grad.dx);
+
+    var dW1 = matmulTransA(cache.flat, 1, L * C.embedDim, dh1Pre, C.hiddenDim);
+    var db1 = dh1Pre;
+    var dflat = matmulTransB(dh1Pre, 1, C.hiddenDim, P.W1, L * C.embedDim, C.hiddenDim);
+
+    // dEmb
+    var dEmb = new Float32Array(V * C.embedDim);
+    for (var i = 0; i < L; i++) {
+      var id = inputIds[i];
+      for (var j = 0; j < C.embedDim; j++) {
+        dEmb[id * C.embedDim + j] += dflat[i * C.embedDim + j];
+      }
+    }
+
+    return {
+      emb: dEmb,
+      W1: dW1, b1: db1, ln1_gamma: ln1Grad.dGamma, ln1_beta: ln1Grad.dBeta,
+      W2: dW2, b2: db2, ln2_gamma: ln2Grad.dGamma, ln2_beta: ln2Grad.dBeta,
+      W3: dW3, b3: db3,
+    };
+  }
+
+  // ===== Adam参数更新 (含学习率预热+余弦退火+权重衰减) =====
   updateParams(grads) {
     var C = this.config;
-    // Learning rate warmup + decay
+    // Learning rate: warmup -> cosine annealing
     var lr;
     if (this.trainStep < C.warmupSteps) {
       lr = C.learningRate * (this.trainStep + 1) / C.warmupSteps;
     } else {
-      lr = C.learningRate * Math.pow(C.lrDecay, Math.floor((this.trainStep - C.warmupSteps) / 100));
+      // Cosine annealing from warmupSteps to maxSteps
+      var progress = (this.trainStep - C.warmupSteps) / Math.max(1, C.maxSteps - C.warmupSteps);
+      progress = Math.min(1, progress);
+      lr = C.learningRate * 0.5 * (1 + Math.cos(Math.PI * progress));
     }
 
     this.optT++;
@@ -693,26 +872,54 @@ export class NiedieBrain {
     }
   }
 
-  // ===== 训练 =====
+  // ===== 训练（配对训练 + 标签平滑） =====
   async train(data, epochs, onProgress) {
     if (!data || data.length === 0) data = TRAINING_DATA;
 
+    // Build vocab from all data
     var fullText = data.join('\n') + '\n';
     this.buildVocab(fullText);
     this.initParams();
 
     var C = this.config;
+    var V = this.vocabSize;
+    var smoothEps = C.labelSmoothing || 0.1;
+
+    // Build pair-based training examples: each TRAINING_DATA entry is "用户：xxx\n逆蝶：yyy"
+    // For each entry, we teach the model to predict the response chars given the input
     var examples = [];
-    for (var i = 0; i < fullText.length - C.contextLen - 1; i++) {
-      var ctx = fullText.slice(i, i + C.contextLen);
-      var target = fullText[i + C.contextLen];
-      examples.push({
-        input: this.encode(ctx),
-        target: this.charToId[target] !== undefined ? this.charToId[target] : 0,
-      });
+    for (var d = 0; d < data.length; d++) {
+      var entry = data[d];
+      // Split at \n to get input/response parts
+      var nlIdx = entry.indexOf('\n');
+      if (nlIdx < 0) continue;
+      var inputPart = entry.substring(0, nlIdx + 1);
+      var responsePart = entry.substring(nlIdx + 1);
+      
+      // Use last contextLen chars of inputPart as context, predict first char of response
+      var contextStr = inputPart.substring(Math.max(0, inputPart.length - C.contextLen));
+      var ctxIds = this.encode(contextStr);
+      
+      // Pad context to contextLen
+      while (ctxIds.length < C.contextLen) ctxIds.unshift(0);
+      if (ctxIds.length > C.contextLen) ctxIds = ctxIds.slice(ctxIds.length - C.contextLen);
+      
+      // For each char in response, create a training example
+      // Context grows: predict response[0] from input context, then response[1] from input+response[0], etc.
+      var runningCtx = ctxIds.slice();
+      for (var ri = 0; ri < responsePart.length && ri < 30; ri++) {
+        var targetChar = responsePart[ri];
+        var targetId = this.charToId[targetChar];
+        if (targetId === undefined) targetId = 0;
+        examples.push({ input: runningCtx.slice(), target: targetId });
+        // Shift context: remove first char, add target char
+        runningCtx.shift();
+        runningCtx.push(targetId);
+      }
     }
 
     var totalSteps = epochs * examples.length;
+    C.maxSteps = Math.max(C.maxSteps, totalSteps);
     this.trainStep = 0;
     this.bestLoss = Infinity;
 
@@ -735,8 +942,18 @@ export class NiedieBrain {
           var ex = examples[b + bi];
           var fwd = this.forward(ex.input, true);
           var probs = softmax(fwd.logits);
+          // Label smoothing: target distribution = (1-eps) * onehot + eps/V
           batchLoss += -Math.log(Math.max(probs[ex.target], 1e-8));
-          var grads = this.backward(ex.target, fwd);
+          
+          // Softmax + CE gradient with label smoothing
+          // Correct: dL/dz_i = p_i - q_i, where q_target = (1-eps)+eps/V, q_other = eps/V
+          var dLogits = new Float32Array(V);
+          for (var vi = 0; vi < V; vi++) {
+            dLogits[vi] = probs[vi] - smoothEps / V;
+          }
+          dLogits[ex.target] -= (1 - smoothEps);
+          
+          var grads = this.backwardWithGrad(ex.input, fwd, dLogits);
           if (!accumGrads) {
             accumGrads = {};
             for (var k in grads) {
@@ -777,17 +994,28 @@ export class NiedieBrain {
 
       // Track best loss
       var avgEpochLoss = epochLoss / batchCount;
-      if (avgEpochLoss < this.bestLoss) this.bestLoss = avgEpochLoss;
+      if (avgEpochLoss < this.bestLoss) {
+        this.bestLoss = avgEpochLoss;
+        // Save best model checkpoint
+        if (this.serializeBinary) {
+          this.bestModel = this.serializeBinary();
+        }
+      }
 
       if (onProgress) onProgress(this.trainingProgress, this.currentLoss, epoch + 1, epochs);
+    }
+
+    // Restore best model
+    if (this.bestModel) {
+      this.deserializeBinary(this.bestModel);
     }
 
     this.trained = true;
     if (onProgress) onProgress(1.0, this.currentLoss, epochs, epochs);
   }
 
-  // ===== Top-k 采样 =====
-  sampleTopK(probs, k, repetitionPenalty, recentChars) {
+  // ===== Top-k + Top-p (核) 采样 =====
+  sampleTopK(probs, k, repetitionPenalty, recentChars, topP) {
     var V = probs.length;
     // Apply repetition penalty
     var adjusted = new Float32Array(V);
@@ -799,12 +1027,26 @@ export class NiedieBrain {
       }
     }
 
-    // Find top-k indices
-    var kActual = Math.min(k, V);
+    // Sort by probability descending
     var indices = [];
     for (var i = 0; i < V; i++) indices.push(i);
     indices.sort(function(a, b) { return adjusted[b] - adjusted[a]; });
+
+    // Top-k filtering
+    var kActual = Math.min(k || V, V);
     var topIndices = indices.slice(0, kActual);
+
+    // Top-p (nucleus) filtering: keep tokens until cumulative prob >= topP
+    if (topP && topP < 1.0) {
+      var cumSum = 0;
+      var nucleusIndices = [];
+      for (var ni = 0; ni < topIndices.length; ni++) {
+        nucleusIndices.push(topIndices[ni]);
+        cumSum += adjusted[topIndices[ni]];
+        if (cumSum >= topP) break;
+      }
+      if (nucleusIndices.length > 0) topIndices = nucleusIndices;
+    }
 
     // Renormalize
     var sum = 0;
@@ -854,8 +1096,8 @@ export class NiedieBrain {
       for (var i = 0; i < scaled.length; i++) sum += scaled[i];
       for (var i = 0; i < scaled.length; i++) scaled[i] /= sum;
 
-      // Top-k sampling with repetition penalty
-      var nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars);
+      // Top-k + Top-p sampling with repetition penalty
+      var nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP);
 
       var ch = this.idToChar[nextId];
       if (ch === '\n' && output.length > C.minGenLen) {

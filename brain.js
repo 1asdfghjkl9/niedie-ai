@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v7.8 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v7.9 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -21,6 +21,8 @@
 //        generate返回后后处理(去重复标点、修剪首尾)
 //  v7.8: 混合解码策略 — 前3token贪心解码(确保开头合理) +
 //        后续低温采样、增强上下文构建(包含完整对话历史)
+//  v7.9: 增强重复检测 — 双重重复检查(字符级+词级)、
+//        标点模式检测(防止。，。，循环)、最低生成长度提升至8
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -922,7 +924,7 @@ export class NiedieBrain {
       repetitionPenalty: 1.5,
       frequencyPenalty: 0.5,
       noRepeatNgram: 4,
-      minGenLen: 5,
+      minGenLen: 8, // v7.9: was 5, raised to prevent too-short responses
       labelSmoothing: 0.1,
     };
     this.vocab = [];
@@ -1651,11 +1653,22 @@ export class NiedieBrain {
     // Remove consecutive duplicate punctuation (e.g., "。。。" → "。")
     result = result.replace(/([。，！？、；：])\1+/g, '$1');
     
+    // v7.9: Detect and break punctuation patterns (e.g., "。，。，。" → "。")
+    result = result.replace(/([。，！？、；：])([。，！？、；：])/g, function(match, p1, p2) {
+      // If two different punctuation marks repeat, keep only the first
+      return p1;
+    });
+    // Re-clean consecutive duplicates after pattern removal
+    result = result.replace(/([。，！？、；：])\1+/g, '$1');
+    
     // Remove leading punctuation
     result = result.replace(/^[。，、；：]+/, '');
     
     // Remove trailing partial words (single char followed by punctuation repeated)
     result = result.replace(/(.)。\1。\1/g, '$1。');
+    
+    // v7.9: Remove repeated single-char patterns (e.g., "的你的你" → "的你")
+    result = result.replace(/(.)(.)\1\2\1\2/g, '$1$2');
     
     // Ensure at least one non-punctuation character
     var hasContent = /[^\s。，！？、；：]/.test(result);

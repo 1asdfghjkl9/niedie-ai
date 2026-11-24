@@ -35,6 +35,7 @@
 //  v8.6: no-repeat-ngram收紧(4→3)、后处理去重复句子、合并过短连续句子
 //  v8.7: beam search多样性惩罚(同步骤已选token被降权)、鼓励不同路径探索
 //  v8.8: 频率惩罚改用sqrt(温和惩罚高频token、允许常见词自然复用)
+//  v8.9: 循环检测早停(检测重复模式并提前终止生成)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1787,6 +1788,29 @@ export class NiedieBrain {
       recentChars[nextId] = (recentChars[nextId] || 0) + 1;
 
       if (output.length >= maxLen) break;
+      
+      // v8.9: Loop detection — check if output is stuck in a repeating pattern
+      if (output.length >= 12) {
+        var pattern = null;
+        // Check for repeating patterns of length 2-6
+        for (var plen = 2; plen <= 6; plen++) {
+          if (output.length >= plen * 3) {
+            var tail = output.slice(-plen);
+            var prev1 = output.slice(-plen * 2, -plen);
+            var prev2 = output.slice(-plen * 3, -plen * 2);
+            if (tail === prev1 && prev1 === prev2) {
+              pattern = plen;
+              break;
+            }
+          }
+        }
+        if (pattern !== null) {
+          // Remove the repeated pattern from the end (keep one copy)
+          output = output.slice(0, output.length - pattern * 2);
+          break;
+        }
+      }
+      
       // v8.5: Length-dependent sentence ending — probability increases with length
       if (output.length > C.minGenLen && (output.endsWith('。') || output.endsWith('！') || output.endsWith('？'))) {
         var endProb = 0.2 + 0.4 * Math.min((output.length - C.minGenLen) / 60, 1.0); // 0.2→0.6

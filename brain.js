@@ -43,6 +43,7 @@
 //  v9.4: 后处理末尾补句号(无句末标点时添加。)
 //  v9.5: 最低概率阈值(采样前过滤极低概率token<0.001)
 //  v9.6: beam search重复惩罚(beam候选选择时对已出现token降权)
+//  v9.7: 后处理空格规范化(首尾trim、标点前后多余空格清理)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1885,7 +1886,12 @@ export class NiedieBrain {
     });
     // Re-clean consecutive duplicates after pattern removal
     result = result.replace(/([。，！？、；：])\1+/g, '$1');
-    
+
+    // v9.7: Normalize spaces — remove spaces around Chinese punctuation, trim ends
+    result = result.replace(/\s+/g, ' ');
+    result = result.replace(/\s+([。，！？、；：])/g, '$1');
+    result = result.replace(/([。，！？、；：])\s+/g, '$1');
+    result = result.trim();
     // Remove leading punctuation
     result = result.replace(/^[。，、；：]+/, '');
     

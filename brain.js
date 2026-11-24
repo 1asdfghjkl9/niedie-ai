@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v7.4 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v7.6 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -13,7 +13,10 @@
 //  v7.3: 限制词表大小500(按频率取top498+<pad>+<unk>)、
 //        未知字符映射<unk>(id=1)、ban特殊token生成 — loss从5.95降至5.20
 //  v7.4: 训练数据扩充516条(翻倍)、batchSize=32加速训练、
-//        train()支持extraData参数合并外部数据 — loss降至5.14
+//        train()支持extraData参数合并外部数据 — loss降至4.21
+//  v7.5: batchSize=8增加梯度更新(102→505次)、806条数据(516+290额外)
+//  v7.6: 生成优化 — 禁止"："作为开头token、增强重复惩罚(1.5)、
+//        数字惩罚、no-repeat-ngram(4)、扩大重复窗口(20)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -912,9 +915,9 @@ export class NiedieBrain {
       maxSteps: 8000,
       topK: 20,
       topP: 0.9,
-      repetitionPenalty: 1.3,
+      repetitionPenalty: 1.5,
       frequencyPenalty: 0.5,
-      noRepeatNgram: 3,
+      noRepeatNgram: 4,
       minGenLen: 5,
       labelSmoothing: 0.1,
     };
@@ -1449,12 +1452,17 @@ export class NiedieBrain {
   }
 
   // ===== Top-k + Top-p (核) 采样 + 频率惩罚 + no-repeat-ngram =====
-  sampleTopK(probs, k, repetitionPenalty, recentChars, topP, freqPenalty, outputIds, noRepeatNgram) {
+  sampleTopK(probs, k, repetitionPenalty, recentChars, topP, freqPenalty, outputIds, noRepeatNgram, genStep) {
     var V = probs.length;
     // Ban special tokens: <pad>=0, <unk>=1 — never generate these
     var adjusted = new Float32Array(V);
     for (var i = 0; i < V; i++) {
       if (i === 0 || i === 1) { adjusted[i] = 0; continue; } // v7.3: ban <pad> and <unk>
+      // v7.6: Ban "：" (colon) for the first 3 tokens of generation
+      if (genStep !== undefined && genStep < 3 && this.idToChar[i] === '：') {
+        adjusted[i] = 0;
+        continue;
+      }
       var penalty = 1.0;
       if (recentChars && recentChars[i] && recentChars[i] > 0) {
         penalty *= repetitionPenalty;
@@ -1464,6 +1472,11 @@ export class NiedieBrain {
         adjusted[i] = probs[i] / (penalty + freqPenalty * recentChars[i]);
       } else {
         adjusted[i] = probs[i] / penalty;
+      }
+      // v7.6: Digit penalty — reduce probability of digit characters by 50%
+      var ch = this.idToChar[i];
+      if (ch >= '0' && ch <= '9') {
+        adjusted[i] *= 0.5;
       }
     }
 
@@ -1568,8 +1581,9 @@ export class NiedieBrain {
       for (var i = 0; i < scaled.length; i++) scaled[i] /= sum;
 
       // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
+      // v7.6: pass genStep (t) to ban "：" at generation start
       var nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP,
-        C.frequencyPenalty, outputIds, C.noRepeatNgram);
+        C.frequencyPenalty, outputIds, C.noRepeatNgram, t);
 
       var ch = this.idToChar[nextId];
       if (ch === '\n' && output.length > C.minGenLen) {
@@ -1578,9 +1592,9 @@ export class NiedieBrain {
       output += ch;
       outputIds.push(nextId);
 
-      // Update repetition tracking (last 15 chars)
+      // Update repetition tracking (last 20 chars) — v7.6: expanded from 15 to 20
       recentQueue.push(nextId);
-      if (recentQueue.length > 15) {
+      if (recentQueue.length > 20) {
         var old = recentQueue.shift();
         recentChars[old] = (recentChars[old] || 0) - 1;
         if (recentChars[old] <= 0) delete recentChars[old];
@@ -1641,7 +1655,25 @@ export class NiedieBrain {
       var nlIdx = data.indexOf('\n');
       var meta = JSON.parse(data.substring(0, nlIdx));
       var b64 = data.substring(nlIdx + 1);
+      // v7.6: Save generation-time config from code before overwriting with saved config
+      // Architecture params (embedDim, attnDim, hiddenDim, contextLen) must come from saved model
+      // Generation params (topK, topP, repetitionPenalty, etc.) should use code version, not saved
+      var genConfig = {
+        topK: this.config.topK,
+        topP: this.config.topP,
+        repetitionPenalty: this.config.repetitionPenalty,
+        frequencyPenalty: this.config.frequencyPenalty,
+        noRepeatNgram: this.config.noRepeatNgram,
+        minGenLen: this.config.minGenLen,
+      };
       this.config = meta.config;
+      // Restore generation-time config from code version
+      this.config.topK = genConfig.topK;
+      this.config.topP = genConfig.topP;
+      this.config.repetitionPenalty = genConfig.repetitionPenalty;
+      this.config.frequencyPenalty = genConfig.frequencyPenalty;
+      this.config.noRepeatNgram = genConfig.noRepeatNgram;
+      this.config.minGenLen = genConfig.minGenLen;
       this.vocab = meta.vocab;
       this.vocabSize = meta.vocabSize;
       this.trained = meta.trained;

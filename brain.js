@@ -32,6 +32,7 @@
 //  v8.3: top-k退火(前期大k增多样性、后期小k增连贯)
 //  v8.4: 衰减式重复惩罚(近期token惩罚大、远期token惩罚小)
 //  v8.5: 句子结束概率随长度递增、动态温度下限(防过低)、后处理移除末尾不完整句
+//  v8.6: no-repeat-ngram收紧(4→3)、后处理去重复句子、合并过短连续句子
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -932,7 +933,7 @@ export class NiedieBrain {
       topP: 0.9,
       repetitionPenalty: 1.5,
       frequencyPenalty: 0.5,
-      noRepeatNgram: 4,
+      noRepeatNgram: 3, // v8.6: was 4, tightened to 3
       minGenLen: 8, // v7.9: was 5, raised to prevent too-short responses
       labelSmoothing: 0.1,
     };
@@ -1858,6 +1859,28 @@ export class NiedieBrain {
         }
       }
     }
+    
+    // v8.6: Remove duplicate sentences
+    var sentSplit = result.split(/([。！？])/);
+    var sentList = [];
+    for (var si2 = 0; si2 < sentSplit.length; si2 += 2) {
+      var s = (sentSplit[si2] || '') + (sentSplit[si2 + 1] || '');
+      if (s.length > 0) sentList.push(s);
+    }
+    var deduped = '';
+    var seen = {};
+    for (var si3 = 0; si3 < sentList.length; si3++) {
+      var key = sentList[si3].replace(/[。！？]/g, '').trim();
+      if (key.length > 0 && seen[key]) continue; // skip duplicate
+      if (key.length > 0) seen[key] = true;
+      deduped += sentList[si3];
+    }
+    result = deduped;
+    
+    // v8.6: Merge consecutive very short sentences (< 3 chars each)
+    result = result.replace(/(.{1,2}[。！？])(.{1,2}[。！？])/g, function(match, s1, s2) {
+      return s1 + s2.replace(/[。！？]/, ''); // merge without double punctuation
+    });
     
     return result;
   }

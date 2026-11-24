@@ -27,6 +27,8 @@
 //        单字符最大重复次数限制(3次)、生成质量评分
 //  v8.1: 束搜索解码(beam width=3, prefix=5)替代贪心选择、
 //        对数概率累积保证数值稳定、beam选择后继续采样
+//  v8.2: beam search长度归一化(避免短序列偏好)、
+//        自适应top-p(高置信度时收窄、低置信度时放宽)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1577,6 +1579,7 @@ export class NiedieBrain {
   }
 
   // ===== v8.1: 束搜索解码（beam search）=====
+  // v8.2: 添加长度归一化，避免偏向短序列
   // 返回最优beam的token id序列和对应输出字符串
   beamSearch(genContext, beamWidth, beamLen) {
     var C = this.config;
@@ -1624,18 +1627,31 @@ export class NiedieBrain {
         }
       }
 
-      // Sort all candidates by cumulative log probability and keep top beamWidth
-      candidates.sort(function(a, b) { return b.logProb - a.logProb; });
+      // v8.2: Length-normalized beam selection
+      // Score = logProb / (len^alpha), alpha=0.7 — penalizes very short sequences
+      var alpha = 0.7;
+      candidates.sort(function(a, b) {
+        var scoreA = a.logProb / Math.pow(Math.max(a.ids.length, 1), alpha);
+        var scoreB = b.logProb / Math.pow(Math.max(b.ids.length, 1), alpha);
+        return scoreB - scoreA;
+      });
       beams = candidates.slice(0, beamWidth);
       
       // Safety: if no candidates (all banned), stop early
       if (beams.length === 0) break;
     }
 
-    // Return best beam, or empty if no candidates
+    // Return best beam (by raw logProb for final selection), or empty if no candidates
     if (beams.length === 0) {
       return { ids: [], text: '' };
     }
+    // v8.2: Final selection by length-normalized score
+    var alpha2 = 0.7;
+    beams.sort(function(a, b) {
+      var scoreA = a.logProb / Math.pow(Math.max(a.ids.length, 1), alpha2);
+      var scoreB = b.logProb / Math.pow(Math.max(b.ids.length, 1), alpha2);
+      return scoreB - scoreA;
+    });
     return { ids: beams[0].ids, text: beams[0].text };
   }
 
@@ -1687,8 +1703,20 @@ export class NiedieBrain {
         for (var i = 0; i < scaled.length; i++) sum += scaled[i];
         for (var i = 0; i < scaled.length; i++) scaled[i] /= sum;
 
+        // v8.2: Adaptive top-p — narrow when confident, widen when uncertain
+        var maxProb = 0;
+        for (var i = 0; i < scaled.length; i++) {
+          if (scaled[i] > maxProb) maxProb = scaled[i];
+        }
+        var adaptTopP = C.topP;
+        if (maxProb > 0.5) {
+          adaptTopP = Math.max(0.5, C.topP - 0.2); // confident → narrower
+        } else if (maxProb < 0.2) {
+          adaptTopP = Math.min(0.98, C.topP + 0.05); // uncertain → slightly wider
+        }
+
         // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
-        nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP,
+        nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, adaptTopP,
           C.frequencyPenalty, outputIds, C.noRepeatNgram, t);
         
         // v8.0: Max repetition count — if char appeared 3+ times recently, force different
@@ -1702,7 +1730,7 @@ export class NiedieBrain {
             if (recentChars[i] && recentChars[i] >= 3) { altProbs[i] = 0; continue; }
             altProbs[i] = scaled[i];
           }
-          nextId = this.sampleTopK(altProbs, C.topK, C.repetitionPenalty * 2, recentChars, C.topP,
+          nextId = this.sampleTopK(altProbs, C.topK, C.repetitionPenalty * 2, recentChars, adaptTopP,
             C.frequencyPenalty * 2, outputIds, C.noRepeatNgram, t);
         }
       }

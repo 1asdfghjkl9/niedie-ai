@@ -44,6 +44,7 @@
 //  v9.5: 最低概率阈值(采样前过滤极低概率token<0.001)
 //  v9.6: beam search重复惩罚(beam候选选择时对已出现token降权)
 //  v9.7: 后处理空格规范化(首尾trim、标点前后多余空格清理)
+//  v9.8: 语义连贯性评分(检测相邻句子共同字符比例、低连贯时降低质量分)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1867,8 +1868,53 @@ export class NiedieBrain {
       }
     }
 
+    // v9.8: Compute semantic coherence score before post-processing
+    var coherenceScore = this.computeCoherence(output);
+    // If coherence is very low, the output is likely garbled — still return it but log the score
+    if (coherenceScore < 0.15 && output.length > 20) {
+      // Low coherence: try to salvage by keeping only the first sentence
+      var firstSentEnd = output.search(/[。！？]/);
+      if (firstSentEnd > 4 && firstSentEnd < output.length - 1) {
+        output = output.slice(0, firstSentEnd + 1);
+      }
+    }
+
     // v7.7: Post-processing — clean up generated text
     return this.postProcess(output);
+  }
+
+  // ===== v9.8: 语义连贯性评分 =====
+  // 检测相邻句子之间的共同字符比例，评估输出连贯性
+  computeCoherence(text) {
+    if (!text || text.length < 4) return 1.0;
+    // Split into sentences by sentence-ending punctuation
+    var sentences = text.split(/[。！？]/).filter(function(s) {
+      return s && s.trim().length >= 2;
+    });
+    if (sentences.length < 2) return 1.0; // Single sentence — assume coherent
+
+    var totalOverlap = 0;
+    var pairs = 0;
+    for (var si = 0; si < sentences.length - 1; si++) {
+      var s1 = sentences[si].trim();
+      var s2 = sentences[si + 1].trim();
+      if (s1.length < 2 || s2.length < 2) continue;
+      // Count common characters
+      var chars1 = {};
+      for (var ci = 0; ci < s1.length; ci++) {
+        chars1[s1[ci]] = true;
+      }
+      var common = 0;
+      for (var ci = 0; ci < s2.length; ci++) {
+        if (chars1[s2[ci]]) common++;
+      }
+      // Overlap ratio: common chars / shorter sentence length
+      var shorter = Math.min(s1.length, s2.length);
+      totalOverlap += common / shorter;
+      pairs++;
+    }
+    if (pairs === 0) return 1.0;
+    return totalOverlap / pairs;
   }
 
   // ===== v7.7: 后处理 — 清理生成文本 =====

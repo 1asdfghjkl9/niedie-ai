@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v7.9 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v8.0 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -23,6 +23,8 @@
 //        后续低温采样、增强上下文构建(包含完整对话历史)
 //  v7.9: 增强重复检测 — 双重重复检查(字符级+词级)、
 //        标点模式检测(防止。，。，循环)、最低生成长度提升至8
+//  v8.0: 句子级后处理(分割-清理-重组)、动态温度(前段低温后段略高)、
+//        单字符最大重复次数限制(3次)、生成质量评分
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1604,10 +1606,12 @@ export class NiedieBrain {
         // Greedy: pick highest probability token (with ban on special/digit/colon)
         nextId = this.greedySelect(probs, t);
       } else {
+        // v8.0: Dynamic temperature — start low, gradually increase for variety
+        var dynTemp = temperature * (1.0 + 0.3 * Math.min(t / 30, 1.0));
         // Temperature scaling
         var scaled = new Float32Array(probs.length);
         for (var i = 0; i < probs.length; i++) {
-          scaled[i] = Math.pow(probs[i], 1.0 / temperature);
+          scaled[i] = Math.pow(probs[i], 1.0 / dynTemp);
         }
         var sum = 0;
         for (var i = 0; i < scaled.length; i++) sum += scaled[i];
@@ -1616,6 +1620,21 @@ export class NiedieBrain {
         // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
         nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP,
           C.frequencyPenalty, outputIds, C.noRepeatNgram, t);
+        
+        // v8.0: Max repetition count — if char appeared 3+ times recently, force different
+        if (recentChars[nextId] && recentChars[nextId] >= 3) {
+          // Find next best token that hasn't been over-repeated
+          var altProbs = new Float32Array(probs.length);
+          for (var i = 0; i < probs.length; i++) {
+            if (i === 0 || i === 1) { altProbs[i] = 0; continue; }
+            var c = this.idToChar[i];
+            if (c >= '0' && c <= '9') { altProbs[i] = 0; continue; }
+            if (recentChars[i] && recentChars[i] >= 3) { altProbs[i] = 0; continue; }
+            altProbs[i] = scaled[i];
+          }
+          nextId = this.sampleTopK(altProbs, C.topK, C.repetitionPenalty * 2, recentChars, C.topP,
+            C.frequencyPenalty * 2, outputIds, C.noRepeatNgram, t);
+        }
       }
 
       var ch = this.idToChar[nextId];
@@ -1673,6 +1692,29 @@ export class NiedieBrain {
     // Ensure at least one non-punctuation character
     var hasContent = /[^\s。，！？、；：]/.test(result);
     if (!hasContent) return '';
+    
+    // v8.0: Sentence-level cleanup — split into sentences, filter tiny fragments, rejoin
+    var sentences = result.split(/([。！？])/);
+    var cleaned = '';
+    for (var si = 0; si < sentences.length; si += 2) {
+      var sentence = sentences[si] || '';
+      var punct = sentences[si + 1] || '';
+      if (sentence.length === 0 && punct && cleaned.length > 0) {
+        // Skip empty sentence with trailing punct
+        continue;
+      }
+      // v8.0: Skip sentences that are just one repeated char
+      if (sentence.length > 0) {
+        var firstChar = sentence[0];
+        var allSame = true;
+        for (var ci = 1; ci < sentence.length; ci++) {
+          if (sentence[ci] !== firstChar) { allSame = false; break; }
+        }
+        if (allSame && sentence.length > 2) continue; // skip "你你你"
+      }
+      cleaned += sentence + punct;
+    }
+    result = cleaned;
     
     // Trim to last sentence-ending punctuation if output is very long
     if (result.length > 50) {

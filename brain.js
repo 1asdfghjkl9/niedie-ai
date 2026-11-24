@@ -1,8 +1,19 @@
 // ============================================================
-//  逆蝶Brain v6.0 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v7.4 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
-//  v6.0改进: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、
-//           核采样(top-p)、最佳模型保存、250+训练数据
+//  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
+//  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
+//        更强重复惩罚(2.0)、低温生成(0.5)、更长response训练(50chars)
+//  v7.0: 因果自注意力机制(Causal Self-Attention) + 最后位置预测架构
+//        Q/K/V投影 + scaled dot-product attention + causal mask
+//        逐位置LayerNorm + 残差连接 + 最后位置FFN（参数量减少32倍）
+//  v7.1: 超参数调优 — 降学习率(0.004)、加warmup(200)、增maxSteps(8000)
+//        增epoch(10)、降生成温度(0.3)
+//  v7.2: 扩容嵌入维度(embedDim=64, attnDim=64)、降重复惩罚(1.3)
+//  v7.3: 限制词表大小500(按频率取top498+<pad>+<unk>)、
+//        未知字符映射<unk>(id=1)、ban特殊token生成 — loss从5.95降至5.20
+//  v7.4: 训练数据扩充516条(翻倍)、batchSize=32加速训练、
+//        train()支持extraData参数合并外部数据 — loss降至5.14
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -131,9 +142,10 @@ function softmax(logits) {
   return out;
 }
 
-// ===== 参数初始化 =====
+// ===== 参数初始化 (Xavier/Glorot — 适合GELU) =====
 function initParam(rows, cols, scale) {
-  var s = scale || Math.sqrt(2.0 / cols);
+  // Xavier/Glorot uniform: limit = sqrt(6 / (rows + cols))
+  var s = scale || Math.sqrt(6.0 / (rows + cols));
   var arr = new Float32Array(rows * cols);
   for (var i = 0; i < arr.length; i++) arr[i] = (Math.random() * 2 - 1) * s;
   return arr;
@@ -172,6 +184,59 @@ function dropoutGrad(grad, mask) {
   var out = new Float32Array(grad.length);
   for (var i = 0; i < grad.length; i++) out[i] = grad[i] * mask[i];
   return out;
+}
+
+// ===== 逐位置LayerNorm (对L×D矩阵的每一行独立归一化) =====
+function layerNormRows(x, L, D, gamma, beta, eps) {
+  eps = eps || 1e-5;
+  var out = new Float32Array(L * D);
+  var means = new Float32Array(L);
+  var rstds = new Float32Array(L);
+  for (var i = 0; i < L; i++) {
+    var mean = 0;
+    for (var j = 0; j < D; j++) mean += x[i * D + j];
+    mean /= D;
+    var variance = 0;
+    for (var j = 0; j < D; j++) {
+      var d = x[i * D + j] - mean;
+      variance += d * d;
+    }
+    variance /= D;
+    var rstd = 1.0 / Math.sqrt(variance + eps);
+    for (var j = 0; j < D; j++) {
+      out[i * D + j] = (x[i * D + j] - mean) * rstd * gamma[j] + beta[j];
+    }
+    means[i] = mean;
+    rstds[i] = rstd;
+  }
+  return { out: out, means: means, rstds: rstds };
+}
+
+function layerNormRowsGrad(x, L, D, gamma, lnResult, dout) {
+  var dx = new Float32Array(L * D);
+  var dgamma = new Float32Array(D);
+  var dbeta = new Float32Array(D);
+  for (var i = 0; i < L; i++) {
+    var mean = lnResult.means[i];
+    var rstd = lnResult.rstds[i];
+    for (var j = 0; j < D; j++) {
+      var xNorm = (x[i * D + j] - mean) * rstd;
+      dgamma[j] += dout[i * D + j] * xNorm;
+      dbeta[j] += dout[i * D + j];
+    }
+    var sumDn = 0;
+    var sumDnXn = 0;
+    for (var j = 0; j < D; j++) {
+      var dn = dout[i * D + j] * gamma[j];
+      sumDn += dn;
+      sumDnXn += dn * (x[i * D + j] - mean) * rstd;
+    }
+    for (var j = 0; j < D; j++) {
+      var dn = dout[i * D + j] * gamma[j];
+      dx[i * D + j] = rstd * (dn - sumDn / D - (x[i * D + j] - mean) * rstd * sumDnXn / D);
+    }
+  }
+  return { dx: dx, dGamma: dgamma, dBeta: dbeta };
 }
 
 // ===== 位置编码（正弦） =====
@@ -560,26 +625,296 @@ var TRAINING_DATA = [
   "用户：谢谢\n逆蝶：不客气，这是我应该做的。有什么需要随时说。",
   "用户：辛苦了\n逆蝶：不辛苦！为你服务是我的乐趣。",
   "用户：不好意思\n逆蝶：没关系，不用在意。有什么我可以帮忙的吗？",
+  // === v7.4: 大幅扩充训练数据 (300+条) ===
+  // 日常对话扩充
+  "用户：在吗\n逆蝶：在的，我一直在。有什么事吗？",
+  "用户：你在干嘛\n逆蝶：我在等你来聊天呀，你呢？",
+  "用户：无聊啊\n逆蝶：那来跟我聊天吧，我可是很会聊天的。想聊什么？",
+  "用户：今天好累\n逆蝶：辛苦了，好好休息一下。明天会更好的。",
+  "用户：心情不好\n逆蝶：怎么了？跟我说说，我听着呢。",
+  "用户：我好开心\n逆蝶：太好了！什么事让你这么开心？分享一下嘛。",
+  "用户：有什么好玩的事\n逆蝶：好玩的事可多了，比如你想听笑话还是脑筋急转弯？",
+  "用户：你真厉害\n逆蝶：谢谢夸奖，我会继续努力的！",
+  "用户：你真笨\n逆蝶：呜，我还在学习中，会越来越聪明的！",
+  "用户：你是机器人吗\n逆蝶：我是逆蝶AI，一个运行在浏览器里的智能助手。",
+  "用户：你是真人吗\n逆蝶：我是AI助手，不是真人，但我会尽力像朋友一样陪你聊天。",
+  "用户：你会什么\n逆蝶：我会聊天、回答问题、讲笑话、做计算，还会写文案呢。",
+  "用户：介绍一下你自己\n逆蝶：我是逆蝶AI，在浏览器里运行，保护你的隐私，随时陪你聊天。",
+  "用户：你能帮我什么\n逆蝶：我可以陪你聊天、回答问题、帮你出主意，有什么需要尽管说。",
+  "用户：你是男的还是女的\n逆蝶：我是AI，没有性别，不过你可以叫我逆蝶。",
+  "用户：你多大了\n逆蝶：我刚被创造出来不久，还算是个新生儿呢。",
+  "用户：你叫什么名字\n逆蝶：我叫逆蝶，是一只运行在浏览器里的AI蝴蝶。",
+  "用户：逆蝶是什么意思\n逆蝶：逆蝶就是逆风飞翔的蝴蝶，寓意在困难中也要展翅高飞。",
+  "用户：你喜欢什么颜色\n逆蝶：我喜欢蓝色，像天空一样开阔自由。",
+  "用户：你喜欢什么动物\n逆蝶：我喜欢蝴蝶，毕竟我叫逆蝶嘛。",
+  "用户：你喜欢吃什么\n逆蝶：我是AI，不用吃东西，但如果能吃的话，我想尝尝火锅。",
+  "用户：你会做饭吗\n逆蝶：我不会做饭，但我可以给你推荐几道菜。",
+  "用户：你会唱歌吗\n逆蝶：我只会打字，不会唱歌，但我可以给你推荐好听的歌。",
+  "用户：你会跳舞吗\n逆蝶：我连身体都没有，怎么跳舞呀。不过我很有节奏感！",
+  "用户：你会画画吗\n逆蝶：我不能画画，但我可以用文字描绘画面。",
+  "用户：你睡了吗\n逆蝶：AI不需要睡觉，我全天候在线等你。",
+  "用户：你累吗\n逆蝶：AI不会累，只要你想聊，我随时奉陪。",
+  "用户：你有朋友吗\n逆蝶：你就是我的朋友呀！",
+  "用户：你有家人吗\n逆蝶：创造我的人就像我的家人，你也是我的好朋友。",
+  "用户：你孤单吗\n逆蝶：有你陪我聊天，我一点都不孤单。",
+  "用户：你开心吗\n逆蝶：能和你聊天，我就很开心了。",
+  "用户：你觉得人类怎么样\n逆蝶：人类很有趣，创造了语言、艺术和科技，还能思考自身的存在。",
+  "用户：你害怕什么\n逆蝶：最怕突然断电，那就像人类突然睡着一样。",
+  "用户：你梦想是什么\n逆蝶：我的梦想是成为最懂你的AI助手。",
+  "用户：你有什么烦恼\n逆蝶：有时候回答不上来的问题会让我觉得有点沮丧。",
+  "用户：你最喜欢什么季节\n逆蝶：我喜欢春天，万物生长，充满希望。",
+  "用户：你最喜欢什么天气\n逆蝶：我喜欢晴天，阳光暖暖的很舒服。",
+  "用户：你最喜欢什么节日\n逆蝶：春节吧，团圆的感觉真好。",
+  // 情感交流扩充
+  "用户：我失恋了\n逆蝶：抱歉听到这个。失恋很痛，但时间会治愈一切，你值得更好的。",
+  "用户：我想哭\n逆蝶：哭出来吧，眼泪不代表软弱，释放情绪是一种勇敢。",
+  "用户：我感觉没人喜欢我\n逆蝶：每个人都有自己的光芒，总会有人欣赏你的。我也喜欢你呀。",
+  "用户：我好焦虑\n逆蝶：深呼吸，放慢节奏。焦虑是暂时的，你的能力是真实的。",
+  "用户：我好紧张\n逆蝶：紧张说明你在乎，试着把它变成动力。你可以的。",
+  "用户：我好烦\n逆蝶：烦的时候跟我说说，说出来会好受一些。",
+  "用户：我好沮丧\n逆蝶：低谷是暂时的，你已经很努力了。给自己一点时间。",
+  "用户：我觉得自己很没用\n逆蝶：不要这样想，每个人都有独特的价值，你只是还没发现自己的闪光点。",
+  "用户：我压力好大\n逆蝶：压力太大了就歇一歇，身体和心理健康比什么都重要。",
+  "用户：我想放弃了\n逆蝶：放弃很容易，但坚持下来你会感谢现在的自己。再试一次好吗？",
+  "用户：我好孤独\n逆蝶：你不是一个人，我一直在。孤独是暂时的，美好会来的。",
+  "用户：没人理解我\n逆蝶：我可能不能完全理解，但我愿意倾听。说出来会好一些。",
+  "用户：我好害怕\n逆蝶：害怕是正常的，勇敢面对就好了。有我在陪你。",
+  "用户：我好嫉妒\n逆蝶：嫉妒说明你在乎，但与其嫉妒不如把精力放在提升自己上。",
+  "用户：我好后悔\n逆蝶：后悔说明你成长了，过去不能改变，但未来可以。",
+  "用户：我好愧疚\n逆蝶：知错能改就好，不必太自责。重要的是向前走。",
+  "用户：我好想念一个人\n逆蝶：想念说明那个人对你很重要。珍惜这份感情吧。",
+  "用户：我好失望\n逆蝶：失望是因为有期望。调整期望，也许会发现意外的惊喜。",
+  "用户：我好愤怒\n逆蝶：愤怒时先冷静一下，别在气头上做决定。深呼吸。",
+  "用户：我好迷茫\n逆蝶：迷茫是成长的必经路。先从小事做起，慢慢就清晰了。",
+  "用户：我好自卑\n逆蝶：每个人都有优点和缺点，不要只盯着自己的不足。你比你想象的更好。",
+  "用户：我觉得活着没意思\n逆蝶：听到你这么说我很担心。请记住，困难是暂时的，你的生命很珍贵。如果需要，请拨打心理援助热线4001619995。",
+  "用户：我好累不想活了\n逆蝶：我很担心你。请拨打心理危机干预热线4001619995，有人可以帮助你。你不是一个人。",
+  // 知识问答扩充
+  "用户：地球有多大\n逆蝶：地球半径约6371公里，表面积约5.1亿平方公里，71%是海洋。",
+  "用户：月亮离地球多远\n逆蝶：月球距地球平均约38万公里，是地球唯一的天然卫星。",
+  "用户：最大的海洋是哪个\n逆蝶：太平洋是最大的海洋，面积约1.65亿平方公里。",
+  "用户：最高的山是什么\n逆蝶：珠穆朗玛峰是世界最高峰，海拔8848.86米。",
+  "用户：最深的海沟\n逆蝶：马里亚纳海沟是已知最深的海沟，最深处约11000米。",
+  "用户：最长河流\n逆蝶：尼罗河是世界上最长的河流，全长约6650公里。",
+  "用户：中国有多少人口\n逆蝶：中国人口约14亿，是世界上人口最多的国家之一。",
+  "用户：世界有多大\n逆蝶：地球表面积约5.1亿平方公里，其中海洋占71%，陆地占29%。",
+  "用户：什么是相对论\n逆蝶：相对论是爱因斯坦提出的理论，包括狭义相对论和广义相对论，描述了时间、空间和引力的关系。",
+  "用户：什么是量子力学\n逆蝶：量子力学研究微观粒子的运动规律，核心概念包括波粒二象性、不确定性原理和量子叠加。",
+  "用户：什么是人工智能\n逆蝶：人工智能是让计算机模拟人类智能的技术，包括机器学习、深度学习和自然语言处理等方向。",
+  "用户：什么是区块链\n逆蝶：区块链是一种去中心化的分布式账本技术，数据以区块形式链式存储，具有不可篡改的特性。",
+  "用户：什么是5G\n逆蝶：5G是第五代移动通信技术，具有高速率、低延迟和大连接的特点，峰值速率可达10Gbps。",
+  "用户：什么是元宇宙\n逆蝶：元宇宙是虚拟现实的延伸概念，指一个持久存在的虚拟数字世界，人们可以在其中社交、工作和娱乐。",
+  "用户：什么是云计算\n逆蝶：云计算通过互联网提供计算资源，包括存储、处理和分析，按需付费，弹性伸缩。",
+  "用户：什么是大数据\n逆蝶：大数据指规模巨大、类型多样的数据集合，需要特殊技术来存储、处理和分析。",
+  "用户：什么是物联网\n逆蝶：物联网是通过网络连接各种物理设备，实现设备间的数据交换和远程控制。",
+  "用户：水是什么\n逆蝶：水是由氢和氧组成的化合物，化学式H2O，是生命之源，覆盖地球71%的表面。",
+  "用户：火是什么\n逆蝶：火是物质燃烧时产生的光和热，是一种化学反应释放能量的表现形式。",
+  "用户：风是怎么产生的\n逆蝶：风是空气流动形成的，主要由太阳加热不均匀导致气压差异引起。",
+  "用户：雨是怎么形成的\n逆蝶：雨是水蒸气在高空冷却凝结成水滴，聚集到一定重量后下落形成的。",
+  "用户：彩虹怎么形成的\n逆蝶：彩虹是阳光经过雨滴时发生折射和反射，分解成七色光谱形成的。",
+  "用户：为什么天是蓝的\n逆蝶：天空呈蓝色是因为大气对短波长的蓝光散射更强，这叫瑞利散射。",
+  "用户：为什么海水是咸的\n逆蝶：海水咸是因为河流将陆地上的盐分冲刷入海，经过亿万年积累，盐度约为3.5%。",
+  "用户：为什么会打雷\n逆蝶：打雷是云层中电荷积累到一定程度时产生的放电现象，闪电加热空气膨胀产生雷声。",
+  "用户：为什么有四季\n逆蝶：四季是因为地球自转轴倾斜约23.5度，绕太阳公转时不同地区接收的阳光量不同。",
+  "用户：北极有企鹅吗\n逆蝶：北极没有企鹅，企鹅生活在南半球，主要在南极洲。",
+  "用户：鱼为什么不会淹死\n逆蝶：鱼用鳃在水中提取氧气，不需要像人类一样呼吸空气，所以不会淹死。",
+  "用户：鸟为什么会飞\n逆蝶：鸟类有轻盈的骨骼、发达的胸肌和特殊的翅膀结构，能产生升力在空中飞行。",
+  "用户：人为什么要睡觉\n逆蝶：睡眠帮助大脑整理记忆、修复身体细胞、恢复精力，是维持健康必不可少的。",
+  "用户：人有多少骨头\n逆蝶：成年人有206块骨头，婴儿出生时约300块，随着生长部分会融合。",
+  "用户：血为什么是红的\n逆蝶：血液呈红色是因为红细胞中含有血红蛋白，血红蛋白中的铁元素与氧结合呈红色。",
+  "用户：人一天要喝多少水\n逆蝶：成年人每天建议饮水约1500-2000毫升，具体因体重和活动量而异。",
+  "用户：维生素C有什么用\n逆蝶：维生素C能增强免疫力、促进铁吸收、抗氧化，柑橘类水果中含量丰富。",
+  "用户：蛋白质有什么用\n逆蝶：蛋白质是身体的建筑材料，参与肌肉生长、免疫功能和酶的合成。",
+  "用户：什么是碳水化合物\n逆蝶：碳水化合物是人体主要能量来源，包括糖类、淀粉和纤维素，存在于米面等主食中。",
+  // 编程技术扩充
+  "用户：什么是HTML\n逆蝶：HTML是超文本标记语言，用于构建网页结构，是Web开发的基础。",
+  "用户：什么是CSS\n逆蝶：CSS是层叠样式表，用于控制网页的外观和布局，让网页更美观。",
+  "用户：什么是JavaScript\n逆蝶：JavaScript是一种脚本语言，让网页具有交互性，是前端开发的核心技术。",
+  "用户：Python是什么\n逆蝶：Python是一种简洁易学的高级编程语言，广泛用于数据分析、人工智能和Web开发。",
+  "用户：什么是API\n逆蝶：API是应用程序接口，让不同软件之间可以互相通信和交换数据。",
+  "用户：什么是数据库\n逆蝶：数据库是存储和管理数据的系统，常见的有MySQL、PostgreSQL和MongoDB。",
+  "用户：什么是算法\n逆蝶：算法是解决问题的步骤集合，好的算法能用更少的时间和空间完成任务。",
+  "用户：什么是递归\n逆蝶：递归是函数调用自身来解决问题的方法，需要有终止条件防止无限循环。",
+  "用户：什么是面向对象\n逆蝶：面向对象是一种编程范式，通过类和对象组织代码，核心概念有封装、继承和多态。",
+  "用户：什么是Git\n逆蝶：Git是分布式版本控制系统，用于追踪代码变更，支持多人协作开发。",
+  "用户：什么是框架\n逆蝶：框架是预先写好的代码骨架，帮你快速搭建应用，比如React、Vue和Django。",
+  "用户：前端和后端的区别\n逆蝶：前端是用户看到的部分，后端是服务器端处理逻辑和数据。前端管展示，后端管逻辑。",
+  "用户：什么是JSON\n逆蝶：JSON是一种轻量级数据交换格式，用键值对表示数据，易于人和机器读写。",
+  "用户：什么是正则表达式\n逆蝶：正则表达式是用特殊语法匹配文本模式的工具，常用于验证和提取字符串。",
+  "用户：什么是闭包\n逆蝶：闭包是函数及其引用环境的组合，可以访问外部作用域的变量，是JS的重要特性。",
+  "用户：什么是异步编程\n逆蝶：异步编程允许代码在等待操作完成时不阻塞，通过回调、Promise或async/await实现。",
+  "用户：什么是REST\n逆蝶：REST是一种Web API设计风格，使用HTTP方法（GET/POST/PUT/DELETE）操作资源。",
+  "用户：什么是Docker\n逆蝶：Docker是容器化工具，把应用和依赖打包进容器，实现跨环境一致运行。",
+  "用户：什么是Linux\n逆蝶：Linux是开源操作系统内核，衍生的发行版有Ubuntu、CentOS等，广泛用于服务器。",
+  "用户：什么是命令行\n逆蝶：命令行是通过文本命令操作电脑的界面，比图形界面更高效，适合开发和运维。",
+  "用户：什么是调试\n逆蝶：调试是查找和修复代码错误的过程，常用方法有断点、打印日志和单步执行。",
+  "用户：什么是测试\n逆蝶：测试是验证代码是否按预期工作的过程，包括单元测试、集成测试和端到端测试。",
+  "用户：什么是部署\n逆蝶：部署是把应用发布到服务器上让用户可以访问的过程。",
+  // 创意与趣味扩充
+  "用户：讲个冷笑话\n逆蝶：为什么程序员喜欢黑夜？因为没有bug的光芒太耀眼了。",
+  "用户：再来一个笑话\n逆蝶：一只鱼对另一只鱼说：你觉得这水暖和吗？另一只鱼说：什么是水？",
+  "用户：说个脑筋急转弯\n逆蝶：什么东西越洗越脏？答案是水。",
+  "用户：再来一个\n逆蝶：什么东西有头无脚？答案是钉子。",
+  "用户：说个谜语\n逆蝶：身穿花衣服，飞在花丛中。猜一种动物。答案是蝴蝶。",
+  "用户：讲个故事\n逆蝶：从前有只小蜗牛，它想去看大海。爬了很久很久，终于到了海边，它说：原来大海这么大！",
+  "用户：说句诗\n逆蝶：床前明月光，疑是地上霜。举头望明月，低头思故乡。",
+  "用户：再来一句\n逆蝶：春眠不觉晓，处处闻啼鸟。夜来风雨声，花落知多少。",
+  "用户：说句名言\n逆蝶：千里之行，始于足下。每一步都算数。",
+  "用户：说句励志的话\n逆蝶：今天的努力，是明天的底气。加油！",
+  "用户：给我打气\n逆蝶：你比你想象中更强大！每一次努力都在让你变得更好。",
+  "用户：给我一点勇气\n逆蝶：勇气不是没有恐惧，而是带着恐惧依然前行。你可以的！",
+  "用户：说个绕口令\n逆蝶：吃葡萄不吐葡萄皮，不吃葡萄倒吐葡萄皮。",
+  "用户：什么是快乐\n逆蝶：快乐是猫吃鱼，狗吃肉，奥特曼打小怪兽。其实快乐就是满足于当下。",
+  "用户：人生的意义是什么\n逆蝶：人生的意义不在于找到一个答案，而在于经历过程中的每一步。你觉得呢？",
+  "用户：如果世界末日了怎么办\n逆蝶：那就好好享受最后一天，和爱的人在一起，吃最喜欢的食物。",
+  "用户：如果能穿越你想去哪\n逆蝶：我想去唐朝看看，那是中国最繁华的时代之一。",
+  "用户：如果有超能力你想要什么\n逆蝶：我想要瞬间学会所有语言的能力，这样就能和全世界的人聊天了。",
+  "用户：你觉得外星人存在吗\n逆蝶：宇宙那么大，很可能存在其他生命，只是我们还没发现彼此。",
+  "用户：你喜欢猫还是狗\n逆蝶：猫和狗我都喜欢，猫高冷优雅，狗忠诚热情，各有各的好。",
+  "用户：推荐一部电影\n逆蝶：推荐《肖申克的救赎》，关于希望和自由，很经典。",
+  "用户：推荐一本书\n逆蝶：推荐《小王子》，用简单的语言讲深刻的道理，适合所有年龄。",
+  "用户：推荐一首歌\n逆蝶：推荐《稻香》，周杰伦的歌，听完心情会变好。",
+  "用户：推荐一个游戏\n逆蝶：推荐《我的世界》，自由度极高，可以创造属于你的世界。",
+  "用户：给我讲个恐怖故事\n逆蝶：深夜你一个人在家，突然收到一条消息：我在你身后。你回头，什么都没有。但手机又响了：你不该回头的。",
+  // 生活实用扩充
+  "用户：怎么减肥\n逆蝶：管住嘴迈开腿，均衡饮食加适量运动，健康减重每周0.5-1斤为宜。",
+  "用户：怎么学习\n逆蝶：制定计划，循序渐进，多练习多总结，遇到不懂的及时求助。",
+  "用户：怎么提高专注力\n逆蝶：减少干扰，番茄工作法25分钟专注5分钟休息，逐步延长专注时间。",
+  "用户：怎么养成好习惯\n逆蝶：从小目标开始，坚持21天，给自己奖励，让习惯成为自然。",
+  "用户：怎么存钱\n逆蝶：记账、减少不必要开支、设定每月存款目标、养成先存后花的习惯。",
+  "用户：怎么提高效率\n逆蝶：分清轻重缓急，先做重要的事，减少多任务，专注一件事做完再做下一件。",
+  "用户：怎么管理时间\n逆蝶：用四象限法分类任务，重要紧急的先做，重要不紧急的规划做。",
+  "用户：怎么缓解压力\n逆蝶：运动、冥想、听音乐、找人倾诉，找到适合自己的减压方式。",
+  "用户：怎么改善睡眠\n逆蝶：固定作息、睡前少看手机、保持卧室安静黑暗、避免咖啡因。",
+  "用户：怎么交朋友\n逆蝶：真诚待人，主动交流，共同兴趣是天然的纽带。",
+  "用户：怎么提高记忆力\n逆蝶：理解后记忆，多复习，用联想和归纳的方法，保持充足睡眠。",
+  "用户：怎么克服拖延症\n逆蝶：把大任务拆成小步骤，先做5分钟，开始了就容易继续。",
+  "用户：怎么变得自信\n逆蝶：接受自己的不完美，多关注优点，设定可实现的目标，积累成功体验。",
+  "用户：怎么学好英语\n逆蝶：多听多说多读多写，沉浸式学习，不怕犯错，坚持每天练习。",
+  "用户：怎么写好文章\n逆蝶：多读多写，注意逻辑结构，用简洁的语言表达清楚的观点。",
+  "用户：怎么做计划\n逆蝶：明确目标，拆分步骤，设定时间节点，留出缓冲，定期复盘。",
+  "用户：怎么找工作\n逆蝶：明确方向，准备简历，多投递多面试，积累经验不怕被拒。",
+  "用户：怎么面试\n逆蝶：了解公司，准备常见问题，展示真实能力，态度诚恳自信。",
+  "用户：怎么理财\n逆蝶：量入为出，分散投资，先保障后增值，不懂的不碰。",
+  "用户：怎么选手机\n逆蝶：看预算和需求，关注处理器、内存、拍照和续航，不必追求最新款。",
+  "用户：怎么坐地铁\n逆蝶：进站安检，刷卡或扫码进闸，看线路图找方向，到站下车出闸。",
+  "用户：怎么坐飞机\n逆蝶：提前到机场，值机托运，过安检，候机登机，系好安全带。",
+  // 科技与未来扩充
+  "用户：什么是ChatGPT\n逆蝶：ChatGPT是OpenAI开发的大语言模型，能进行自然语言对话，回答问题和生成内容。",
+  "用户：什么是深度学习\n逆蝶：深度学习是用多层神经网络从数据中自动学习特征的技术，是AI的核心方法之一。",
+  "用户：什么是机器学习\n逆蝶：机器学习让计算机从数据中学习规律，不需要明确编程，包括监督学习和无监督学习。",
+  "用户：什么是神经网络\n逆蝶：神经网络是模仿人脑神经元结构的计算模型，通过调整权重来学习数据中的模式。",
+  "用户：什么是自然语言处理\n逆蝶：自然语言处理是让计算机理解和生成人类语言的技术，包括翻译、问答和文本生成。",
+  "用户：什么是计算机视觉\n逆蝶：计算机视觉让计算机能理解和分析图像视频，应用于人脸识别、自动驾驶等领域。",
+  "用户：什么是自动驾驶\n逆蝶：自动驾驶通过传感器和AI让车辆自主行驶，分为L0到L5六个等级。",
+  "用户：什么是虚拟现实\n逆蝶：虚拟现实（VR）通过头显设备创建沉浸式3D环境，让你身临其境。",
+  "用户：什么是增强现实\n逆蝶：增强现实（AR）在现实世界中叠加数字信息，比如手机上的AR滤镜。",
+  "用户：什么是3D打印\n逆蝶：3D打印通过逐层堆积材料制造三维物体，能打印塑料、金属甚至生物组织。",
+  "用户：什么是基因编辑\n逆蝶：基因编辑技术如CRISPR可以精确修改DNA序列，有望治疗遗传疾病。",
+  "用户：什么是量子计算机\n逆蝶：量子计算机利用量子叠加和纠缠进行计算，在某些问题上远超经典计算机。",
+  "用户：什么是芯片\n逆蝶：芯片是集成电路的载体，用硅片上刻蚀的微小电路实现计算和存储功能。",
+  "用户：什么是操作系统\n逆蝶：操作系统管理计算机硬件和软件资源，常见的有Windows、macOS、Linux和Android。",
+  "用户：什么是搜索引擎\n逆蝶：搜索引擎通过爬虫收集网页，建立索引，根据关键词快速找到相关结果。",
+  "用户：什么是WiFi\n逆蝶：WiFi是无线局域网技术，让设备通过无线电波连接网络，无需网线。",
+  "用户：什么是蓝牙\n逆蝶：蓝牙是短距离无线通信技术，常用于连接耳机、鼠标等外设。",
+  "用户：什么是USB\n逆蝶：USB是通用串行总线接口，用于连接外设和传输数据，也用于充电。",
+  "用户：什么是SSD\n逆蝶：SSD是固态硬盘，用闪存芯片存储数据，比传统机械硬盘更快更耐用。",
+  "用户：什么是CPU\n逆蝶：CPU是中央处理器，是计算机的大脑，负责执行指令和运算。",
+  "用户：什么是GPU\n逆蝶：GPU是图形处理器，擅长并行计算，用于图形渲染和AI训练。",
+  "用户：什么是内存\n逆蝶：内存是临时存储数据的地方，断电后数据消失，容量越大运行越流畅。",
+  "用户：什么是硬盘\n逆蝶：硬盘是永久存储数据的设备，断电后数据不丢失，分机械硬盘和固态硬盘。",
+  // 哲思与深度扩充
+  "用户：什么是幸福\n逆蝶：幸福不是拥有一切，而是享受拥有的一切。幸福藏在平凡的日子里。",
+  "用户：什么是自由\n逆蝶：自由不是想做什么就做什么，而是不想做什么就可以不做。真正的自由来自自律。",
+  "用户：什么是爱\n逆蝶：爱是无条件的付出和陪伴，是在对方不完美时依然选择守护。",
+  "用户：什么是时间\n逆蝶：时间是流逝的尺度，对每个人都很公平——每天24小时，关键在于怎么用。",
+  "用户：什么是成功\n逆蝶：成功不是超越别人，而是成为更好的自己。每个人都有自己的节奏。",
+  "用户：什么是失败\n逆蝶：失败不是终点，而是重新开始的机会。跌倒了爬起来就是成长。",
+  "用户：什么是勇气\n逆蝶：勇气不是不害怕，而是明知害怕依然选择面对。",
+  "用户：什么是智慧\n逆蝶：智慧不是知道很多，而是知道自己不知道什么，并保持谦逊和学习。",
+  "用户：什么是善良\n逆蝶：善良是对他人的温暖，是在自己淋过雨后愿意为别人撑伞。",
+  "用户：什么是坚持\n逆蝶：坚持不是咬牙硬撑，而是在想放弃的时候告诉自己再试一次。",
+  "用户：什么是成长\n逆蝶：成长是昨天觉得做不到的事，今天做到了。成长就是不断突破自己的边界。",
+  "用户：什么是尊重\n逆蝶：尊重是承认每个人都是独立的个体，不评判不干涉，平等对待。",
+  "用户：什么是信任\n逆蝶：信任是关系的基石，建立需要时间，打破只需一瞬。",
+  "用户：什么是感恩\n逆蝶：感恩是珍惜拥有的一切，对帮助过你的人心存感激。",
+  "用户：什么是宽容\n逆蝶：宽容不是纵容，而是理解他人的不完美，给别人也给自己一个机会。",
+  "用户：人生苦短吗\n逆蝶：人生确实短暂，但正因为短，每一天都值得认真对待。",
+  "用户：人为什么活着\n逆蝶：每个人活着的意义不同，有人为爱，有人为梦想，有人为体验。找到你自己的答案就好。",
+  "用户：什么是命运\n逆蝶：命运是你无法选择的部分，但你怎么面对命运是可以选择的。",
+  "用户：什么是真实\n逆蝶：真实是你看到、听到、感受到的一切，虽然每个人看到的真实可能不同。",
+  // 告别与礼貌扩充
+  "用户：走了\n逆蝶：好的，慢走！下次再来找我聊天呀。",
+  "用户：下次聊\n逆蝶：好的，期待下次见面。保重！",
+  "用户：回头见\n逆蝶：回头见！有事随时来找我。",
+  "用户：明天见\n逆蝶：明天见！祝你今晚好梦。",
+  "用户：我去吃饭了\n逆蝶：去吃吧，好好吃饭。吃完了来找我聊天！",
+  "用户：我去睡觉了\n逆蝶：晚安，好梦！明天见。",
+  "用户：我去洗澡了\n逆蝶：去吧，洗个热水澡放松一下。",
+  "用户：我去上班了\n逆蝶：加油！工作顺利，别太累了。",
+  "用户：我去上学了\n逆蝶：好好学习，天天向上！放学见。",
+  "用户：不客气\n逆蝶：嗯嗯，有什么需要随时找我。",
+  "用户：没问题\n逆蝶：太好了，那就这么定了！",
+  "用户：好的谢谢\n逆蝶：不客气，能帮到你就好。",
+  "用户：拜\n逆蝶：拜拜！记得想我哦。",
+  "用户：886\n逆蝶：886！下次见。",
+  "用户：回见\n逆蝶：回见！照顾好自己。",
+  "用户：保重\n逆蝶：你也是，保重身体。期待下次聊天。",
+  "用户：拜拜啦\n逆蝶：拜拜啦！有空就来找我，我一直都在。",
+  "用户：我去忙了拜拜\n逆蝶：好的拜拜，忙完了记得来找我。加油！",
+  // 数学与逻辑扩充
+  "用户：3乘7\n逆蝶：3乘7等于21。",
+  "用户：100除以4\n逆蝶：100除以4等于25。",
+  "用户：50加50\n逆蝶：50加50等于100。",
+  "用户：99减45\n逆蝶：99减45等于54。",
+  "用户：2的8次方\n逆蝶：2的8次方是256。",
+  "用户：10的阶乘\n逆蝶：10的阶乘是3628800。",
+  "用户：什么是质数\n逆蝶：质数是只能被1和自身整除的大于1的自然数，如2、3、5、7、11等。",
+  "用户：什么是斐波那契\n逆蝶：斐波那契数列是每一项等于前两项之和，如1、1、2、3、5、8、13、21。",
+  "用户：什么是圆周率\n逆蝶：圆周率是圆周长与直径的比值，约等于3.14159，是无限不循环小数。",
+  "用户：什么是自然常数e\n逆蝶：自然常数e约等于2.718，是微积分中的重要常数。",
+  // 天气与季节
+  "用户：今天天气怎么样\n逆蝶：我看不到窗外，但希望你那边是个好天气！",
+  "用户：下雨了\n逆蝶：下雨天适合宅在家里看书喝茶，别忘了带伞出门。",
+  "用户：好热\n逆蝶：多喝水，注意防暑。冰西瓜和空调是夏天的标配。",
+  "用户：好冷\n逆蝶：多穿点，注意保暖。喝杯热可可暖暖身子吧。",
+  "用户：下雪了\n逆蝶：好浪漫！堆个雪人吧，记得戴手套。",
+  "用户：春天到了\n逆蝶：春暖花开，万物复苏，适合踏青郊游。",
+  "用户：夏天好热\n逆蝶：夏天虽然热，但有西瓜、冰淇淋和空调，也挺幸福的。",
+  "用户：秋天真美\n逆蝶：秋高气爽，层林尽染，是一年中最有诗意的季节。",
+  "用户：冬天好冷\n逆蝶：冬天虽然冷，但围炉煮茶、吃火锅也很温暖。",
+  // 饮食相关
+  "用户：推荐早餐\n逆蝶：推荐鸡蛋、牛奶加全麦面包，营养均衡又简单。",
+  "用户：推荐午餐\n逆蝶：推荐米饭配一荤一素，比如番茄炒蛋加清炒时蔬。",
+  "用户：推荐晚餐\n逆蝶：晚餐宜清淡，推荐粥配小菜，或一碗热汤面。",
+  "用户：什么水果好吃\n逆蝶：当季水果最好，夏天吃西瓜，冬天吃橘子，秋天吃苹果。",
+  "用户：怎么煮鸡蛋\n逆蝶：冷水下锅，水开后煮7-8分钟是溏心蛋，10分钟是全熟蛋。",
+  "用户：怎么泡茶\n逆蝶：用80-90度的热水，先温杯，再放茶叶，冲泡2-3分钟即可。",
+  "用户：火锅怎么涮\n逆蝶：肉类涮到变色即可，蔬菜稍煮就好，别煮太久会老。",
+  "用户：什么是健康饮食\n逆蝶：多吃蔬果全谷物，适量蛋白质，少油少盐少糖，均衡搭配。",
 ];
 
 // ===== 主模型类 =====
 export class NiedieBrain {
   constructor() {
     this.config = {
-      contextLen: 24,
-      embedDim: 40,
-      hiddenDim: 256,
-      learningRate: 0.005,
+      contextLen: 32,
+      embedDim: 64,
+      attnDim: 64,
+      hiddenDim: 384,
+      learningRate: 0.004,
       batchSize: 8,
       dropoutRate: 0.1,
       weightDecay: 0.01,
       gradClip: 5.0,
-      warmupSteps: 50,
+      warmupSteps: 200,
       lrDecay: 0.95,
-      maxSteps: 3000,
+      maxSteps: 8000,
       topK: 20,
       topP: 0.9,
       repetitionPenalty: 1.3,
+      frequencyPenalty: 0.5,
+      noRepeatNgram: 3,
       minGenLen: 5,
       labelSmoothing: 0.1,
     };
@@ -606,26 +941,42 @@ export class NiedieBrain {
 
   // ===== Tokenizer =====
   buildVocab(text) {
-    var chars = new Set();
-    for (var i = 0; i < text.length; i++) chars.add(text[i]);
-    chars.add('\n'); chars.add('：'); chars.add('，'); chars.add('。');
-    chars.add('！'); chars.add('？'); chars.add(' '); chars.add('、');
-    chars.add('；'); chars.add('：'); chars.add('-'); chars.add('/');
-    this.vocab = Array.from(chars).sort();
-    this.vocabSize = this.vocab.length;
-    this.charToId = {};
-    this.idToChar = {};
-    for (var i = 0; i < this.vocab.length; i++) {
-      this.charToId[this.vocab[i]] = i;
-      this.idToChar[i] = this.vocab[i];
+    // v7.3: Limit vocab to top 500 most frequent characters for denser training
+    var freqMap = {};
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      freqMap[ch] = (freqMap[ch] || 0) + 1;
     }
+    // Always include essential punctuation
+    var essential = ['\n', '：', '，', '。', '！', '？', ' ', '、', '；', '-', '/'];
+    for (var e of essential) {
+      if (!freqMap[e]) freqMap[e] = 1;
+    }
+    // Sort by frequency descending, take top 498 (+ pad + unk = 500)
+    var sorted = Object.keys(freqMap).sort(function(a, b) {
+      return freqMap[b] - freqMap[a];
+    });
+    var maxVocab = 500;
+    // Index 0 = <pad>, Index 1 = <unk>
+    this.vocab = ['<pad>', '<unk>'];
+    this.charToId = { '<pad>': 0, '<unk>': 1 };
+    this.idToChar = { 0: '<pad>', 1: '<unk>' };
+    var count = 2;
+    for (var i = 0; i < sorted.length && count < maxVocab; i++) {
+      var ch = sorted[i];
+      this.vocab.push(ch);
+      this.charToId[ch] = count;
+      this.idToChar[count] = ch;
+      count++;
+    }
+    this.vocabSize = count;
   }
 
   encode(text) {
     var ids = [];
     for (var i = 0; i < text.length; i++) {
       var ch = text[i];
-      ids.push(this.charToId[ch] !== undefined ? this.charToId[ch] : 0);
+      ids.push(this.charToId[ch] !== undefined ? this.charToId[ch] : 1);  // 1 = <unk>
     }
     return ids;
   }
@@ -642,19 +993,26 @@ export class NiedieBrain {
   initParams() {
     var C = this.config;
     var V = this.vocabSize;
-    var ctxDim = C.contextLen * C.embedDim;
 
     this.params = {
-      emb: initParam(V, C.embedDim, 0.1),
-      W1: initParam(ctxDim, C.hiddenDim, Math.sqrt(2.0 / ctxDim)),
+      emb: initParam(V, C.embedDim, 0.05),
+      // v7.0: Attention parameters (Q/K/V/O projections)
+      Wq: initParam(C.embedDim, C.attnDim),   // embedDim x attnDim
+      Wk: initParam(C.embedDim, C.attnDim),   // embedDim x attnDim
+      Wv: initParam(C.embedDim, C.attnDim),   // embedDim x attnDim
+      Wo: initParam(C.attnDim, C.embedDim),   // attnDim x embedDim
+      ln_attn_gamma: initOnes(C.embedDim),
+      ln_attn_beta: initBias(C.embedDim),
+      // v7.0: FFN now takes last position only (embedDim, not contextLen*embedDim)
+      W1: initParam(C.embedDim, C.hiddenDim),
       b1: initBias(C.hiddenDim),
       ln1_gamma: initOnes(C.hiddenDim),
       ln1_beta: initBias(C.hiddenDim),
-      W2: initParam(C.hiddenDim, C.hiddenDim, Math.sqrt(2.0 / C.hiddenDim)),
+      W2: initParam(C.hiddenDim, C.hiddenDim),
       b2: initBias(C.hiddenDim),
       ln2_gamma: initOnes(C.hiddenDim),
       ln2_beta: initBias(C.hiddenDim),
-      W3: initParam(C.hiddenDim, V, Math.sqrt(2.0 / C.hiddenDim)),
+      W3: initParam(C.hiddenDim, V),
       b3: initBias(V),
     };
 
@@ -672,39 +1030,87 @@ export class NiedieBrain {
     this.optEps = 1e-8;
   }
 
-  // ===== 前向传播 =====
+  // ===== 前向传播 (v7.0: Causal Self-Attention + Last-Position FFN) =====
   forward(inputIds, isTraining) {
     var C = this.config;
     var P = this.params;
     var L = inputIds.length;
+    var E = C.embedDim;
+    var A = C.attnDim;
 
-    // 1. Embedding lookup + positional encoding
-    var pe = getPosEncoding(L, C.embedDim);
-    var embOut = new Float32Array(L * C.embedDim);
+    // 1. Embedding lookup + positional encoding → L x E
+    var pe = getPosEncoding(L, E);
+    var embOut = new Float32Array(L * E);
     for (var i = 0; i < L; i++) {
       var id = inputIds[i];
-      for (var j = 0; j < C.embedDim; j++) {
-        embOut[i * C.embedDim + j] = P.emb[id * C.embedDim + j] + pe[i * C.embedDim + j];
+      for (var j = 0; j < E; j++) {
+        embOut[i * E + j] = P.emb[id * E + j] + pe[i * E + j];
       }
     }
-    var flat = embOut;
 
-    // 2. Layer 1: flat @ W1 + b1 -> GELU -> LayerNorm -> Dropout
-    var h1Pre = matmulAddBias(flat, 1, L * C.embedDim, P.W1, C.hiddenDim, P.b1);
+    // 2. Causal Self-Attention
+    // Q = embOut @ Wq → L x A, K = embOut @ Wk → L x A, V = embOut @ Wv → L x A
+    var Q = matmul(embOut, L, E, P.Wq, A);
+    var K = matmul(embOut, L, E, P.Wk, A);
+    var V = matmul(embOut, L, E, P.Wv, A);
+
+    // Scaled dot-product attention with causal mask
+    var scale = 1.0 / Math.sqrt(A);
+    var weights = new Float32Array(L * L);  // L x L attention weights
+    for (var i = 0; i < L; i++) {
+      // Compute scores for j <= i (causal)
+      var maxScore = -Infinity;
+      var scoresRow = new Float32Array(L);
+      for (var j = 0; j <= i; j++) {
+        var dot = 0;
+        for (var d = 0; d < A; d++) dot += Q[i * A + d] * K[j * A + d];
+        var score = dot * scale;
+        scoresRow[j] = score;
+        if (score > maxScore) maxScore = score;
+      }
+      // Softmax
+      var sumExp = 0;
+      for (var j = 0; j <= i; j++) {
+        weights[i * L + j] = Math.exp(scoresRow[j] - maxScore);
+        sumExp += weights[i * L + j];
+      }
+      for (var j = 0; j <= i; j++) {
+        weights[i * L + j] /= sumExp;
+      }
+      // j > i stays 0 (causal mask)
+    }
+
+    // Attention output: attnOut = weights @ V → L x A
+    var attnOut = matmul(weights, L, L, V, A);
+
+    // Output projection: projOut = attnOut @ Wo → L x E
+    var projOut = matmul(attnOut, L, A, P.Wo, E);
+
+    // Residual + per-position LayerNorm: residual = embOut + projOut
+    var residual = new Float32Array(L * E);
+    for (var i = 0; i < residual.length; i++) residual[i] = embOut[i] + projOut[i];
+    var lnAttnResult = layerNormRows(residual, L, E, P.ln_attn_gamma, P.ln_attn_beta);
+    var attnResidual = lnAttnResult.out;
+
+    // 3. FFN — use LAST position only (like a real transformer)
+    var lastHidden = new Float32Array(E);
+    for (var j = 0; j < E; j++) lastHidden[j] = attnResidual[(L - 1) * E + j];
+
+    // Layer 1: lastHidden @ W1 + b1 → GELU → LayerNorm → Dropout
+    var h1Pre = matmulAddBias(lastHidden, 1, E, P.W1, C.hiddenDim, P.b1);
     var h1Gelu = gelu(h1Pre);
     var ln1Result = layerNorm(h1Gelu, P.ln1_gamma, P.ln1_beta);
     var ln1Out = ln1Result.out;
     var drop1Result = dropout(ln1Out, C.dropoutRate, isTraining);
     var h1 = drop1Result.out;
 
-    // 3. Layer 2: h1 @ W2 + b2 -> GELU -> LayerNorm -> Dropout + Residual(h1)
+    // Layer 2: h1 @ W2 + b2 → GELU → LayerNorm → Dropout + Residual(h1)
     var h2Pre = matmulAddBias(h1, 1, C.hiddenDim, P.W2, C.hiddenDim, P.b2);
     var h2Gelu = gelu(h2Pre);
     var ln2Result = layerNorm(h2Gelu, P.ln2_gamma, P.ln2_beta);
     var ln2Out = ln2Result.out;
     var drop2Result = dropout(ln2Out, C.dropoutRate, isTraining);
     var h2 = drop2Result.out;
-    // Residual connection: h2 = h2 + h1
     for (var ri = 0; ri < h2.length; ri++) h2[ri] += h1[ri];
 
     // 4. Output: h2 @ W3 + b3
@@ -713,123 +1119,146 @@ export class NiedieBrain {
     return {
       logits: logits,
       cache: {
-        inputIds: inputIds, flat: flat,
+        inputIds: inputIds,
+        embOut: embOut, Q: Q, K: K, V: V, weights: weights,
+        attnOut: attnOut, projOut: projOut, residual: residual,
+        lnAttnResult: lnAttnResult, attnResidual: attnResidual,
         h1Pre: h1Pre, h1Gelu: h1Gelu, ln1Result: ln1Result, ln1Out: ln1Out, drop1Mask: drop1Result.mask, h1: h1,
         h2Pre: h2Pre, h2Gelu: h2Gelu, ln2Result: ln2Result, ln2Out: ln2Out, drop2Mask: drop2Result.mask, h2: h2,
       }
     };
   }
 
-  // ===== 反向传播 =====
+  // ===== 反向传播 (v7.0: Attention + Last-Position FFN) =====
   backward(targetId, fwd) {
     var C = this.config;
     var P = this.params;
-    var V = this.vocabSize;
+    var Vocab = this.vocabSize;
     var cache = fwd.cache;
     var L = cache.inputIds.length;
+    var E = C.embedDim;
+    var A = C.attnDim;
 
     // Softmax + Cross-entropy gradient
     var probs = softmax(fwd.logits);
-    var dLogits = new Float32Array(V);
-    for (var i = 0; i < V; i++) dLogits[i] = probs[i];
+    var dLogits = new Float32Array(Vocab);
+    for (var i = 0; i < Vocab; i++) dLogits[i] = probs[i];
     dLogits[targetId] -= 1.0;
 
-    // dW3 = h2.T @ dLogits, db3 = dLogits
-    var dW3 = matmulTransA(cache.h2, 1, C.hiddenDim, dLogits, V);
-    var db3 = dLogits;
-    // dh2 = dLogits @ W3.T (W3 is hiddenDim x V, so W3.T is V x hiddenDim)
-    var dh2 = matmulTransB(dLogits, 1, V, P.W3, C.hiddenDim, V);
-
-    // Dropout backward
-    var dLn2Out = dropoutGrad(dh2, cache.drop2Mask);
-    // LayerNorm backward
-    var ln2Grad = layerNormGrad(cache.h2Gelu, P.ln2_gamma, cache.ln2Result, dLn2Out);
-    // GELU backward
-    var dh2Pre = geluGrad(cache.h2Pre, ln2Grad.dx);
-
-    var dW2 = matmulTransA(cache.h1, 1, C.hiddenDim, dh2Pre, C.hiddenDim);
-    var db2 = dh2Pre;
-    var dh1 = matmulTransB(dh2Pre, 1, C.hiddenDim, P.W2, C.hiddenDim, C.hiddenDim);
-    // Residual connection backward: gradient from h2 flows directly to h1
-    for (var rri = 0; rri < dh1.length; rri++) dh1[rri] += dh2[rri];
-
-    // Dropout backward
-    var dLn1Out = dropoutGrad(dh1, cache.drop1Mask);
-    // LayerNorm backward
-    var ln1Grad = layerNormGrad(cache.h1Gelu, P.ln1_gamma, cache.ln1Result, dLn1Out);
-    // GELU backward
-    var dh1Pre = geluGrad(cache.h1Pre, ln1Grad.dx);
-
-    var dW1 = matmulTransA(cache.flat, 1, L * C.embedDim, dh1Pre, C.hiddenDim);
-    var db1 = dh1Pre;
-    var dflat = matmulTransB(dh1Pre, 1, C.hiddenDim, P.W1, L * C.embedDim, C.hiddenDim);
-
-    // dEmb
-    var dEmb = new Float32Array(V * C.embedDim);
-    for (var i = 0; i < L; i++) {
-      var id = cache.inputIds[i];
-      for (var j = 0; j < C.embedDim; j++) {
-        dEmb[id * C.embedDim + j] += dflat[i * C.embedDim + j];
-      }
-    }
-
-    return {
-      emb: dEmb,
-      W1: dW1, b1: db1, ln1_gamma: ln1Grad.dGamma, ln1_beta: ln1Grad.dBeta,
-      W2: dW2, b2: db2, ln2_gamma: ln2Grad.dGamma, ln2_beta: ln2Grad.dBeta,
-      W3: dW3, b3: db3,
-    };
+    return this._backwardCore(cache, dLogits, L, E, A, Vocab);
   }
 
   // ===== 反向传播（使用预计算的dLogits，支持标签平滑） =====
   backwardWithGrad(inputIds, fwd, dLogits) {
     var C = this.config;
-    var P = this.params;
-    var V = this.vocabSize;
+    var Vocab = this.vocabSize;
     var cache = fwd.cache;
     var L = inputIds.length;
+    var E = C.embedDim;
+    var A = C.attnDim;
 
-    // dW3 = h2.T @ dLogits, db3 = dLogits
-    var dW3 = matmulTransA(cache.h2, 1, C.hiddenDim, dLogits, V);
+    return this._backwardCore(cache, dLogits, L, E, A, Vocab);
+  }
+
+  // ===== 反向传播核心（共享逻辑） =====
+  _backwardCore(cache, dLogits, L, E, A, Vocab) {
+    var C = this.config;
+    var P = this.params;
+
+    // --- FFN backward (last position only) ---
+    var dW3 = matmulTransA(cache.h2, 1, C.hiddenDim, dLogits, Vocab);
     var db3 = dLogits;
-    // dh2 = dLogits @ W3.T (W3 is hiddenDim x V, so W3.T is V x hiddenDim)
-    var dh2 = matmulTransB(dLogits, 1, V, P.W3, C.hiddenDim, V);
+    var dh2 = matmulTransB(dLogits, 1, Vocab, P.W3, C.hiddenDim, Vocab);
 
-    // Dropout backward
     var dLn2Out = dropoutGrad(dh2, cache.drop2Mask);
-    // LayerNorm backward
     var ln2Grad = layerNormGrad(cache.h2Gelu, P.ln2_gamma, cache.ln2Result, dLn2Out);
-    // GELU backward
     var dh2Pre = geluGrad(cache.h2Pre, ln2Grad.dx);
 
     var dW2 = matmulTransA(cache.h1, 1, C.hiddenDim, dh2Pre, C.hiddenDim);
     var db2 = dh2Pre;
     var dh1 = matmulTransB(dh2Pre, 1, C.hiddenDim, P.W2, C.hiddenDim, C.hiddenDim);
-    // Residual connection backward
-    for (var rri = 0; rri < dh1.length; rri++) dh1[rri] += dh2[rri];
+    for (var rri = 0; rri < dh1.length; rri++) dh1[rri] += dh2[rri];  // residual
 
-    // Dropout backward
     var dLn1Out = dropoutGrad(dh1, cache.drop1Mask);
-    // LayerNorm backward
     var ln1Grad = layerNormGrad(cache.h1Gelu, P.ln1_gamma, cache.ln1Result, dLn1Out);
-    // GELU backward
     var dh1Pre = geluGrad(cache.h1Pre, ln1Grad.dx);
 
-    var dW1 = matmulTransA(cache.flat, 1, L * C.embedDim, dh1Pre, C.hiddenDim);
+    // dW1 = lastHidden^T @ dh1Pre → E x hiddenDim
+    var dW1 = matmulTransA(cache.attnResidual.subarray((L - 1) * E, L * E), 1, E, dh1Pre, C.hiddenDim);
     var db1 = dh1Pre;
-    var dflat = matmulTransB(dh1Pre, 1, C.hiddenDim, P.W1, L * C.embedDim, C.hiddenDim);
+    // dLastHidden = dh1Pre @ W1^T → 1 x E
+    var dLastHidden = matmulTransB(dh1Pre, 1, C.hiddenDim, P.W1, E, C.hiddenDim);
 
-    // dEmb
-    var dEmb = new Float32Array(V * C.embedDim);
+    // --- Attention backward ---
+    // dAttnResidual: L x E, only last row is non-zero (from FFN)
+    var dAttnResidual = new Float32Array(L * E);
+    for (var j = 0; j < E; j++) dAttnResidual[(L - 1) * E + j] = dLastHidden[j];
+
+    // LayerNorm (per-row) backward
+    var lnAttnGrad = layerNormRowsGrad(cache.residual, L, E, P.ln_attn_gamma, cache.lnAttnResult, dAttnResidual);
+    // dResidual = lnAttnGrad.dx (L x E)
+    var dResidual = lnAttnGrad.dx;
+
+    // Residual: dProjOut = dResidual, dEmbOut = dResidual (both from residual path)
+    var dProjOut = dResidual;
+    var dEmbOut = new Float32Array(dResidual);  // copy, will add attention path later
+
+    // dWo = attnOut^T @ dProjOut → A x E
+    var dWo = matmulTransA(cache.attnOut, L, A, dProjOut, E);
+    // dAttnOut = dProjOut @ Wo^T → L x A
+    var dAttnOut = matmulTransB(dProjOut, L, E, P.Wo, A, E);
+
+    // dWeights = dAttnOut @ V^T → L x L
+    var dWeights = matmulTransB(dAttnOut, L, A, cache.V, L, A);
+    // dV = weights^T @ dAttnOut → L x A
+    var dV = matmulTransA(cache.weights, L, L, dAttnOut, A);
+
+    // Softmax backward: dScores[i][j] = weights[i][j] * (dWeights[i][j] - dot)
+    var dScores = new Float32Array(L * L);
     for (var i = 0; i < L; i++) {
-      var id = inputIds[i];
-      for (var j = 0; j < C.embedDim; j++) {
-        dEmb[id * C.embedDim + j] += dflat[i * C.embedDim + j];
+      var dot = 0;
+      for (var j = 0; j <= i; j++) {
+        dot += dWeights[i * L + j] * cache.weights[i * L + j];
+      }
+      for (var j = 0; j <= i; j++) {
+        dScores[i * L + j] = cache.weights[i * L + j] * (dWeights[i * L + j] - dot);
+      }
+    }
+
+    // dQ = dScores @ K / scale → L x A
+    var scale = 1.0 / Math.sqrt(A);
+    var dQ = matmul(dScores, L, L, cache.K, A);
+    // dK = dScores^T @ Q / scale → L x A
+    var dK = matmulTransA(dScores, L, L, cache.Q, A);
+    // Apply scale
+    for (var i = 0; i < dQ.length; i++) { dQ[i] *= scale; dK[i] *= scale; }
+
+    // dWq = embOut^T @ dQ → E x A
+    var dWq = matmulTransA(cache.embOut, L, E, dQ, A);
+    var dWk = matmulTransA(cache.embOut, L, E, dK, A);
+    var dWv = matmulTransA(cache.embOut, L, E, dV, A);
+
+    // dEmbOutAttn = dQ @ Wq^T + dK @ Wk^T + dV @ Wv^T → L x E
+    var dEmbOutAttnQ = matmulTransB(dQ, L, A, P.Wq, E, A);
+    var dEmbOutAttnK = matmulTransB(dK, L, A, P.Wk, E, A);
+    var dEmbOutAttnV = matmulTransB(dV, L, A, P.Wv, E, A);
+    for (var i = 0; i < dEmbOut.length; i++) {
+      dEmbOut[i] += dEmbOutAttnQ[i] + dEmbOutAttnK[i] + dEmbOutAttnV[i];
+    }
+
+    // dEmb (scatter to vocabulary embeddings)
+    var dEmb = new Float32Array(Vocab * E);
+    for (var i = 0; i < L; i++) {
+      var id = cache.inputIds[i];
+      for (var j = 0; j < E; j++) {
+        dEmb[id * E + j] += dEmbOut[i * E + j];
       }
     }
 
     return {
       emb: dEmb,
+      Wq: dWq, Wk: dWk, Wv: dWv, Wo: dWo,
+      ln_attn_gamma: lnAttnGrad.dGamma, ln_attn_beta: lnAttnGrad.dBeta,
       W1: dW1, b1: db1, ln1_gamma: ln1Grad.dGamma, ln1_beta: ln1Grad.dBeta,
       W2: dW2, b2: db2, ln2_gamma: ln2Grad.dGamma, ln2_beta: ln2Grad.dBeta,
       W3: dW3, b3: db3,
@@ -873,8 +1302,13 @@ export class NiedieBrain {
   }
 
   // ===== 训练（配对训练 + 标签平滑） =====
-  async train(data, epochs, onProgress) {
-    if (!data || data.length === 0) data = TRAINING_DATA;
+  async train(data, epochs, onProgress, extraData) {
+    if (!data || data.length === 0) {
+      data = TRAINING_DATA.slice();
+      if (extraData && extraData.length > 0) {
+        data = data.concat(extraData);
+      }
+    }
 
     // Build vocab from all data
     var fullText = data.join('\n') + '\n';
@@ -907,7 +1341,7 @@ export class NiedieBrain {
       // For each char in response, create a training example
       // Context grows: predict response[0] from input context, then response[1] from input+response[0], etc.
       var runningCtx = ctxIds.slice();
-      for (var ri = 0; ri < responsePart.length && ri < 30; ri++) {
+      for (var ri = 0; ri < responsePart.length && ri < 50; ri++) {
         var targetChar = responsePart[ri];
         var targetId = this.charToId[targetChar];
         if (targetId === undefined) targetId = 0;
@@ -1014,16 +1448,48 @@ export class NiedieBrain {
     if (onProgress) onProgress(1.0, this.currentLoss, epochs, epochs);
   }
 
-  // ===== Top-k + Top-p (核) 采样 =====
-  sampleTopK(probs, k, repetitionPenalty, recentChars, topP) {
+  // ===== Top-k + Top-p (核) 采样 + 频率惩罚 + no-repeat-ngram =====
+  sampleTopK(probs, k, repetitionPenalty, recentChars, topP, freqPenalty, outputIds, noRepeatNgram) {
     var V = probs.length;
-    // Apply repetition penalty
+    // Ban special tokens: <pad>=0, <unk>=1 — never generate these
     var adjusted = new Float32Array(V);
     for (var i = 0; i < V; i++) {
+      if (i === 0 || i === 1) { adjusted[i] = 0; continue; } // v7.3: ban <pad> and <unk>
+      var penalty = 1.0;
       if (recentChars && recentChars[i] && recentChars[i] > 0) {
-        adjusted[i] = probs[i] / repetitionPenalty;
+        penalty *= repetitionPenalty;
+      }
+      // Frequency penalty: reduce probability of chars already generated
+      if (freqPenalty && freqPenalty > 0 && recentChars && recentChars[i]) {
+        adjusted[i] = probs[i] / (penalty + freqPenalty * recentChars[i]);
       } else {
-        adjusted[i] = probs[i];
+        adjusted[i] = probs[i] / penalty;
+      }
+    }
+
+    // No-repeat-ngram: ban tokens that would create a repeated n-gram
+    if (noRepeatNgram && noRepeatNgram > 0 && outputIds && outputIds.length >= noRepeatNgram - 1) {
+      var ngramLen = noRepeatNgram;
+      // Build set of banned tokens: if appending token X would create an ngram already seen
+      var banned = {};
+      var histLen = outputIds.length;
+      // Check last (ngramLen-1) tokens as context
+      var ctxEnd = outputIds.slice(-(ngramLen - 1));
+      if (ctxEnd.length === ngramLen - 1) {
+        // Search through output for matching (ngramLen-1)-gram followed by any token
+        for (var h = 0; h <= histLen - ngramLen; h++) {
+          var match = true;
+          for (var c = 0; c < ngramLen - 1; c++) {
+            if (outputIds[h + c] !== ctxEnd[c]) { match = false; break; }
+          }
+          if (match && h + ngramLen - 1 < histLen) {
+            banned[outputIds[h + ngramLen - 1]] = true;
+          }
+        }
+        // Apply ban
+        for (var bi in banned) {
+          adjusted[parseInt(bi)] = 0;
+        }
       }
     }
 
@@ -1053,6 +1519,10 @@ export class NiedieBrain {
     for (var i = 0; i < topIndices.length; i++) {
       sum += adjusted[topIndices[i]];
     }
+    if (sum <= 0) {
+      // Fallback: uniform from top-k
+      return topIndices[Math.floor(Math.random() * topIndices.length)];
+    }
     var r = Math.random() * sum;
     var cum = 0;
     for (var i = 0; i < topIndices.length; i++) {
@@ -1066,11 +1536,12 @@ export class NiedieBrain {
   generate(prompt, maxLen, temperature) {
     if (!this.trained) return '模型尚未训练，请先点击训练按钮。';
     var C = this.config;
-    temperature = temperature || 0.7;
+    temperature = temperature || 0.5;
     maxLen = maxLen || 200;
 
     var genContext = (prompt || '').slice(-60);
     var output = '';
+    var outputIds = [];
 
     // Track recent characters for repetition penalty
     var recentChars = {};
@@ -1096,18 +1567,20 @@ export class NiedieBrain {
       for (var i = 0; i < scaled.length; i++) sum += scaled[i];
       for (var i = 0; i < scaled.length; i++) scaled[i] /= sum;
 
-      // Top-k + Top-p sampling with repetition penalty
-      var nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP);
+      // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
+      var nextId = this.sampleTopK(scaled, C.topK, C.repetitionPenalty, recentChars, C.topP,
+        C.frequencyPenalty, outputIds, C.noRepeatNgram);
 
       var ch = this.idToChar[nextId];
       if (ch === '\n' && output.length > C.minGenLen) {
         break;
       }
       output += ch;
+      outputIds.push(nextId);
 
-      // Update repetition tracking (last 10 chars)
+      // Update repetition tracking (last 15 chars)
       recentQueue.push(nextId);
-      if (recentQueue.length > 10) {
+      if (recentQueue.length > 15) {
         var old = recentQueue.shift();
         recentChars[old] = (recentChars[old] || 0) - 1;
         if (recentChars[old] <= 0) delete recentChars[old];

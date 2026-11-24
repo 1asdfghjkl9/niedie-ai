@@ -31,6 +31,7 @@
 //        自适应top-p(高置信度时收窄、低置信度时放宽)
 //  v8.3: top-k退火(前期大k增多样性、后期小k增连贯)
 //  v8.4: 衰减式重复惩罚(近期token惩罚大、远期token惩罚小)
+//  v8.5: 句子结束概率随长度递增、动态温度下限(防过低)、后处理移除末尾不完整句
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1708,7 +1709,8 @@ export class NiedieBrain {
         var probs = softmax(fwd.logits);
 
         // v8.0: Dynamic temperature — start low, gradually increase for variety
-        var dynTemp = temperature * (1.0 + 0.3 * Math.min(t / 30, 1.0));
+        // v8.5: Temperature floor at 0.3 to prevent overly deterministic output
+        var dynTemp = Math.max(0.3, temperature * (1.0 + 0.3 * Math.min(t / 30, 1.0)));
         // Temperature scaling
         var scaled = new Float32Array(probs.length);
         for (var i = 0; i < probs.length; i++) {
@@ -1774,9 +1776,10 @@ export class NiedieBrain {
       recentChars[nextId] = (recentChars[nextId] || 0) + 1;
 
       if (output.length >= maxLen) break;
-      // Natural ending
+      // v8.5: Length-dependent sentence ending — probability increases with length
       if (output.length > C.minGenLen && (output.endsWith('。') || output.endsWith('！') || output.endsWith('？'))) {
-        if (Math.random() < 0.4) break;
+        var endProb = 0.2 + 0.4 * Math.min((output.length - C.minGenLen) / 60, 1.0); // 0.2→0.6
+        if (Math.random() < endProb) break;
       }
     }
 
@@ -1841,6 +1844,18 @@ export class NiedieBrain {
       var lastEnd = Math.max(result.lastIndexOf('。'), result.lastIndexOf('！'), result.lastIndexOf('？'));
       if (lastEnd > 10) {
         result = result.substring(0, lastEnd + 1);
+      }
+    }
+    
+    // v8.5: Remove trailing incomplete sentence (no ending punctuation)
+    if (result.length > 0) {
+      var lastChar = result[result.length - 1];
+      if (lastChar !== '。' && lastChar !== '！' && lastChar !== '？') {
+        // Find last sentence-ending punctuation
+        var trimEnd = Math.max(result.lastIndexOf('。'), result.lastIndexOf('！'), result.lastIndexOf('？'));
+        if (trimEnd >= 4) { // only trim if we have at least 4 chars before
+          result = result.substring(0, trimEnd + 1);
+        }
       }
     }
     

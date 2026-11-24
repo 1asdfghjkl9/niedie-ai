@@ -38,6 +38,7 @@
 //  v8.9: 循环检测早停(检测重复模式并提前终止生成)
 //  v9.0: 置信度追踪早停(连续低置信度时提前终止、避免低质量输出)
 //  v9.1: 后处理增强(移除独立标点句、移除开头连词、空输出保护)
+//  v9.2: beam search前缀扩展(5→8 token)、更长稳定起始序列
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1705,14 +1706,14 @@ export class NiedieBrain {
     var lowConfidenceStreak = 0;
 
     // v8.1: Beam search for stable prefix
-    var beamResult = this.beamSearch(genContext, 3, 5);
+    var beamResult = this.beamSearch(genContext, 3, 8); // v9.2: extended from 5 to 8
     var beamIds = beamResult.ids;
 
     for (var t = 0; t < maxLen; t++) {
       var nextId;
       
       // v8.1: Beam search for first 5 tokens, then temperature sampling
-      if (t < 5 && beamIds[t] !== undefined) {
+      if (t < 8 && beamIds[t] !== undefined) { // v9.2: extended from 5 to 8
         // Beam search already done before the loop; use pre-computed ids
         nextId = beamIds[t];
       } else {
@@ -1783,7 +1784,7 @@ export class NiedieBrain {
       }
       
       // v9.0: Track confidence for early stopping
-      var usedBeam = (t < 5 && beamIds[t] !== undefined);
+      var usedBeam = (t < 8 && beamIds[t] !== undefined); // v9.2: extended from 5 to 8
       if (usedBeam) {
         confidenceHistory.push(0.5); // default for beam search tokens
         lowConfidenceStreak = 0;

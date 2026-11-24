@@ -30,6 +30,7 @@
 //  v8.2: beam search长度归一化(避免短序列偏好)、
 //        自适应top-p(高置信度时收窄、低置信度时放宽)
 //  v8.3: top-k退火(前期大k增多样性、后期小k增连贯)
+//  v8.4: 衰减式重复惩罚(近期token惩罚大、远期token惩罚小)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1579,6 +1580,19 @@ export class NiedieBrain {
     return bestId >= 0 ? bestId : 2; // fallback to first non-banned token
   }
 
+  // ===== v8.4: 衰减式重复惩罚 =====
+  // 从recentQueue计算位置加权重复权重，近期token权重大、远期权重小
+  computeDecayRecent(recentQueue) {
+    var decayRecent = {};
+    for (var qi = 0; qi < recentQueue.length; qi++) {
+      var tokenId = recentQueue[qi];
+      var distance = recentQueue.length - qi; // 1=most recent, 20=oldest
+      var weight = Math.exp(-0.15 * (distance - 1)); // 1.0→0.06
+      decayRecent[tokenId] = (decayRecent[tokenId] || 0) + weight;
+    }
+    return decayRecent;
+  }
+
   // ===== v8.1: 束搜索解码（beam search）=====
   // v8.2: 添加长度归一化，避免偏向短序列
   // 返回最优beam的token id序列和对应输出字符串
@@ -1720,8 +1734,11 @@ export class NiedieBrain {
         var progress = Math.min(t / maxLen, 1.0);
         var adaptTopK = Math.max(5, Math.round(C.topK * (1.0 - 0.5 * progress)));
 
+        // v8.4: Decay-weighted repetition penalty
+        var decayRecent = this.computeDecayRecent(recentQueue);
+
         // Top-k + Top-p sampling with repetition penalty + frequency penalty + no-repeat-ngram
-        nextId = this.sampleTopK(scaled, adaptTopK, C.repetitionPenalty, recentChars, adaptTopP,
+        nextId = this.sampleTopK(scaled, adaptTopK, C.repetitionPenalty, decayRecent, adaptTopP,
           C.frequencyPenalty, outputIds, C.noRepeatNgram, t);
         
         // v8.0: Max repetition count — if char appeared 3+ times recently, force different
@@ -1735,7 +1752,7 @@ export class NiedieBrain {
             if (recentChars[i] && recentChars[i] >= 3) { altProbs[i] = 0; continue; }
             altProbs[i] = scaled[i];
           }
-          nextId = this.sampleTopK(altProbs, adaptTopK, C.repetitionPenalty * 2, recentChars, adaptTopP,
+          nextId = this.sampleTopK(altProbs, adaptTopK, C.repetitionPenalty * 2, decayRecent, adaptTopP,
             C.frequencyPenalty * 2, outputIds, C.noRepeatNgram, t);
         }
       }

@@ -37,6 +37,7 @@
 //  v8.8: 频率惩罚改用sqrt(温和惩罚高频token、允许常见词自然复用)
 //  v8.9: 循环检测早停(检测重复模式并提前终止生成)
 //  v9.0: 置信度追踪早停(连续低置信度时提前终止、避免低质量输出)
+//  v9.1: 后处理增强(移除独立标点句、移除开头连词、空输出保护)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1865,6 +1866,14 @@ export class NiedieBrain {
     // Remove leading punctuation
     result = result.replace(/^[。，、；：]+/, '');
     
+    // v9.1: Remove leading conjunctions (but only if there's content after)
+    result = result.replace(/^(而|但|所以|因为|如果|虽然|不过|然后|因此)[，,]/, '');
+    
+    // v9.1: Remove standalone punctuation sentences (e.g., "你好。 。的。 → "你好。")
+    result = result.replace(/[。！？]\s*[。！？、，；：]+/g, function(match) {
+      return match.charAt(0); // keep only the first punctuation
+    });
+    
     // Remove trailing partial words (single char followed by punctuation repeated)
     result = result.replace(/(.)。\1。\1/g, '$1。');
     
@@ -1939,6 +1948,11 @@ export class NiedieBrain {
     result = result.replace(/(.{1,2}[。！？])(.{1,2}[。！？])/g, function(match, s1, s2) {
       return s1 + s2.replace(/[。！？]/, ''); // merge without double punctuation
     });
+    
+    // v9.1: Empty output protection — return placeholder if all cleaning removed content
+    if (!result || !/[^\s。，！？、；：]/.test(result)) {
+      return '我理解你的意思。';
+    }
     
     return result;
   }

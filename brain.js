@@ -42,6 +42,7 @@
 //  v9.3: 重复检测窗口扩展(20→30)、更全面的重复防护
 //  v9.4: 后处理末尾补句号(无句末标点时添加。)
 //  v9.5: 最低概率阈值(采样前过滤极低概率token<0.001)
+//  v9.6: beam search重复惩罚(beam候选选择时对已出现token降权)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1638,6 +1639,12 @@ export class NiedieBrain {
         var probs = softmax(fwd.logits);
 
         // Get top candidates with ban filtering
+        // v9.6: Build repetition map for this beam's already-generated tokens
+        var beamRepeatMap = {};
+        for (var ri = 0; ri < beam.ids.length; ri++) {
+          beamRepeatMap[beam.ids[ri]] = (beamRepeatMap[beam.ids[ri]] || 0) + 1;
+        }
+
         var scored = [];
         for (var i = 0; i < probs.length; i++) {
           if (i === 0 || i === 1) continue;
@@ -1650,6 +1657,10 @@ export class NiedieBrain {
             // v8.7: Diversity penalty — reduce logProb for tokens already chosen by previous beams
             if (usedTokensThisStep[i]) {
               lp -= 0.5; // diversity penalty
+            }
+            // v9.6: Repetition penalty — reduce logProb for tokens already in this beam
+            if (beamRepeatMap[i]) {
+              lp -= 0.3 * beamRepeatMap[i]; // 0.3 per occurrence
             }
             scored.push({ id: i, logProb: lp, ch: ch });
           }

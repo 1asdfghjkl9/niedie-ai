@@ -34,6 +34,7 @@
 //  v8.5: 句子结束概率随长度递增、动态温度下限(防过低)、后处理移除末尾不完整句
 //  v8.6: no-repeat-ngram收紧(4→3)、后处理去重复句子、合并过短连续句子
 //  v8.7: beam search多样性惩罚(同步骤已选token被降权)、鼓励不同路径探索
+//  v8.8: 频率惩罚改用sqrt(温和惩罚高频token、允许常见词自然复用)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1485,8 +1486,9 @@ export class NiedieBrain {
         penalty *= repetitionPenalty;
       }
       // Frequency penalty: reduce probability of chars already generated
+      // v8.8: Use sqrt-based penalty for gentler treatment of high-frequency tokens
       if (freqPenalty && freqPenalty > 0 && recentChars && recentChars[i]) {
-        adjusted[i] = probs[i] / (penalty + freqPenalty * recentChars[i]);
+        adjusted[i] = probs[i] / (penalty + freqPenalty * Math.sqrt(recentChars[i]));
       } else {
         adjusted[i] = probs[i] / penalty;
       }

@@ -41,6 +41,7 @@
 //  v9.2: beam search前缀扩展(5→8 token)、更长稳定起始序列
 //  v9.3: 重复检测窗口扩展(20→30)、更全面的重复防护
 //  v9.4: 后处理末尾补句号(无句末标点时添加。)
+//  v9.5: 最低概率阈值(采样前过滤极低概率token<0.001)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1529,6 +1530,14 @@ export class NiedieBrain {
         for (var bi in banned) {
           adjusted[parseInt(bi)] = 0;
         }
+      }
+    }
+
+    // v9.5: Minimum probability threshold - filter out extremely low probability tokens
+    var minProb = 0.001;
+    for (var i = 0; i < V; i++) {
+      if (adjusted[i] > 0 && adjusted[i] < minProb) {
+        adjusted[i] = 0;
       }
     }
 

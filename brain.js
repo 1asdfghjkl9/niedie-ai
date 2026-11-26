@@ -45,6 +45,7 @@
 //  v9.6: beam search重复惩罚(beam候选选择时对已出现token降权)
 //  v9.7: 后处理空格规范化(首尾trim、标点前后多余空格清理)
 //  v9.8: 语义连贯性评分(检测相邻句子共同字符比例、低连贯时降低质量分)
+//  v9.9: 余弦温度退火(替代线性退火、前段高温后段低温的平滑过渡)
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -1753,7 +1754,12 @@ export class NiedieBrain {
 
         // v8.0: Dynamic temperature — start low, gradually increase for variety
         // v8.5: Temperature floor at 0.3 to prevent overly deterministic output
-        var dynTemp = Math.max(0.3, temperature * (1.0 + 0.3 * Math.min(t / 30, 1.0)));
+        // v9.9: Cosine annealing — smooth transition from high to low temperature
+        //   Early: high temp (1.0 + 0.3*cos(0)) = 1.3x → diversity
+        //   Late:  low temp (1.0 + 0.3*cos(π)) = 0.7x → coherence
+        var cosProgress = Math.min(t / 40, 1.0); // full cycle over 40 tokens
+        var tempFactor = 1.0 + 0.3 * Math.cos(cosProgress * Math.PI);
+        var dynTemp = Math.max(0.3, temperature * tempFactor);
         // Temperature scaling
         var scaled = new Float32Array(probs.length);
         for (var i = 0; i < probs.length; i++) {

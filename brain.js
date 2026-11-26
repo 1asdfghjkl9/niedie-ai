@@ -945,7 +945,7 @@ export class NiedieBrain {
       gradClip: 5.0,
       warmupSteps: 200,
       lrDecay: 0.95,
-      maxSteps: 10000,
+      maxSteps: 20000,
       topK: 20,
       topP: 0.9,
       repetitionPenalty: 1.5,
@@ -1398,7 +1398,7 @@ export class NiedieBrain {
   }
 
   // ===== 训练（配对训练 + 标签平滑） =====
-  async train(data, epochs, onProgress, extraData) {
+  async train(data, epochs, onProgress, extraData, continueTraining) {
     if (!data || data.length === 0) {
       data = TRAINING_DATA.slice();
       if (extraData && extraData.length > 0) {
@@ -1406,10 +1406,12 @@ export class NiedieBrain {
       }
     }
 
-    // Build vocab from all data
-    var fullText = data.join('\n') + '\n';
-    this.buildVocab(fullText);
-    this.initParams();
+    if (!continueTraining || !this.params) {
+      // Build vocab from all data
+      var fullText = data.join('\n') + '\n';
+      this.buildVocab(fullText);
+      this.initParams();
+    }
 
     var C = this.config;
     var V = this.vocabSize;
@@ -1437,7 +1439,7 @@ export class NiedieBrain {
       // For each char in response, create a training example
       // v10.0: Only predict first 5 chars of response for speed
       var runningCtx = ctxIds.slice();
-      for (var ri = 0; ri < responsePart.length && ri < 5; ri++) {
+      for (var ri = 0; ri < responsePart.length && ri < 10; ri++) {
         var targetChar = responsePart[ri];
         var targetId = this.charToId[targetChar];
         if (targetId === undefined) targetId = 0;
@@ -1450,8 +1452,10 @@ export class NiedieBrain {
 
     var totalSteps = epochs * examples.length;
     C.maxSteps = Math.max(C.maxSteps, totalSteps);
-    this.trainStep = 0;
-    this.bestLoss = Infinity;
+    if (!continueTraining) {
+      this.trainStep = 0;
+      this.bestLoss = Infinity;
+    }
 
     for (var epoch = 0; epoch < epochs; epoch++) {
       // Shuffle
@@ -1523,7 +1527,14 @@ export class NiedieBrain {
 
         // Yield to UI every 5 batches
         if (batchCount % 5 === 0) {
-          if (onProgress) onProgress(this.trainingProgress, this.currentLoss, epoch + 1, epochs);
+          if (onProgress) {
+            var shouldContinue = onProgress(this.trainingProgress, this.currentLoss, epoch + 1, epochs);
+            if (shouldContinue === false) {
+              console.log('Training stopped by callback');
+              this.trained = true;
+              return;
+            }
+          }
           await new Promise(function(r) { setTimeout(r, 0); });
         }
       }

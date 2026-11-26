@@ -46,6 +46,8 @@
 //  v9.7: 后处理空格规范化(首尾trim、标点前后多余空格清理)
 //  v9.8: 语义连贯性评分(检测相邻句子共同字符比例、低连贯时降低质量分)
 //  v9.9: 余弦温度退火(替代线性退火、前段高温后段低温的平滑过渡)
+//  v10.0: 多层Transformer架构(3层) + 多头注意力(4头×32维) + 扩容(128/128/512/48) +
+//         标准FFN(E→H→E) + 预训练权重格式变更 + 大幅扩充训练数据
 // ============================================================
 
 // ===== 矩阵运算 =====
@@ -931,23 +933,25 @@ export class NiedieBrain {
   constructor() {
     this.config = {
       contextLen: 32,
-      embedDim: 64,
-      attnDim: 64,
-      hiddenDim: 384,
-      learningRate: 0.004,
+      embedDim: 96,
+      attnDim: 96,
+      hiddenDim: 256,
+      numLayers: 3,
+      numHeads: 4,
+      learningRate: 0.003,
       batchSize: 8,
       dropoutRate: 0.1,
       weightDecay: 0.01,
       gradClip: 5.0,
       warmupSteps: 200,
       lrDecay: 0.95,
-      maxSteps: 8000,
+      maxSteps: 10000,
       topK: 20,
       topP: 0.9,
       repetitionPenalty: 1.5,
       frequencyPenalty: 0.5,
-      noRepeatNgram: 3, // v8.6: was 4, tightened to 3
-      minGenLen: 8, // v7.9: was 5, raised to prevent too-short responses
+      noRepeatNgram: 3,
+      minGenLen: 8,
       labelSmoothing: 0.1,
     };
     this.vocab = [];
@@ -1021,32 +1025,37 @@ export class NiedieBrain {
     return s;
   }
 
-  // ===== 参数初始化 =====
+  // ===== v10.0: 参数初始化 (多层多头Transformer) =====
   initParams() {
     var C = this.config;
     var V = this.vocabSize;
+    var E = C.embedDim;
+    var A = C.attnDim;
+    var H = C.hiddenDim;
 
     this.params = {
-      emb: initParam(V, C.embedDim, 0.05),
-      // v7.0: Attention parameters (Q/K/V/O projections)
-      Wq: initParam(C.embedDim, C.attnDim),   // embedDim x attnDim
-      Wk: initParam(C.embedDim, C.attnDim),   // embedDim x attnDim
-      Wv: initParam(C.embedDim, C.attnDim),   // embedDim x attnDim
-      Wo: initParam(C.attnDim, C.embedDim),   // attnDim x embedDim
-      ln_attn_gamma: initOnes(C.embedDim),
-      ln_attn_beta: initBias(C.embedDim),
-      // v7.0: FFN now takes last position only (embedDim, not contextLen*embedDim)
-      W1: initParam(C.embedDim, C.hiddenDim),
-      b1: initBias(C.hiddenDim),
-      ln1_gamma: initOnes(C.hiddenDim),
-      ln1_beta: initBias(C.hiddenDim),
-      W2: initParam(C.hiddenDim, C.hiddenDim),
-      b2: initBias(C.hiddenDim),
-      ln2_gamma: initOnes(C.hiddenDim),
-      ln2_beta: initBias(C.hiddenDim),
-      W3: initParam(C.hiddenDim, V),
-      b3: initBias(V),
+      emb: initParam(V, E, 0.05),
+      W_out: initParam(E, V),
+      b_out: initBias(V),
     };
+
+    // Per-layer parameters
+    for (var l = 0; l < C.numLayers; l++) {
+      // Multi-head attention projections
+      this.params['Wq_' + l] = initParam(E, A);
+      this.params['Wk_' + l] = initParam(E, A);
+      this.params['Wv_' + l] = initParam(E, A);
+      this.params['Wo_' + l] = initParam(A, E);
+      this.params['ln_attn_g_' + l] = initOnes(E);
+      this.params['ln_attn_b_' + l] = initBias(E);
+      // FFN: E→H→E with GELU + LayerNorm
+      this.params['W1_' + l] = initParam(E, H);
+      this.params['b1_' + l] = initBias(H);
+      this.params['W2_' + l] = initParam(H, E);
+      this.params['b2_' + l] = initBias(E);
+      this.params['ln_ffn_g_' + l] = initOnes(H);
+      this.params['ln_ffn_b_' + l] = initBias(H);
+    }
 
     // Adam optimizer state
     this.optState = {};
@@ -1062,239 +1071,294 @@ export class NiedieBrain {
     this.optEps = 1e-8;
   }
 
-  // ===== 前向传播 (v7.0: Causal Self-Attention + Last-Position FFN) =====
+  // ===== v10.0: 前向传播 (多层多头Transformer + 最后位置FFN) =====
   forward(inputIds, isTraining) {
     var C = this.config;
     var P = this.params;
     var L = inputIds.length;
     var E = C.embedDim;
     var A = C.attnDim;
+    var H = C.hiddenDim;
+    var nh = C.numHeads;
+    var hd = A / nh;
+    var Vocab = this.vocabSize;
 
-    // 1. Embedding lookup + positional encoding → L x E
+    // 1. Embedding + positional encoding → L×E
     var pe = getPosEncoding(L, E);
-    var embOut = new Float32Array(L * E);
+    var x = new Float32Array(L * E);
     for (var i = 0; i < L; i++) {
       var id = inputIds[i];
       for (var j = 0; j < E; j++) {
-        embOut[i * E + j] = P.emb[id * E + j] + pe[i * E + j];
+        x[i * E + j] = P.emb[id * E + j] + pe[i * E + j];
       }
     }
 
-    // 2. Causal Self-Attention
-    // Q = embOut @ Wq → L x A, K = embOut @ Wk → L x A, V = embOut @ Wv → L x A
-    var Q = matmul(embOut, L, E, P.Wq, A);
-    var K = matmul(embOut, L, E, P.Wk, A);
-    var V = matmul(embOut, L, E, P.Wv, A);
+    var caches = [];
 
-    // Scaled dot-product attention with causal mask
-    var scale = 1.0 / Math.sqrt(A);
-    var weights = new Float32Array(L * L);  // L x L attention weights
-    for (var i = 0; i < L; i++) {
-      // Compute scores for j <= i (causal)
-      var maxScore = -Infinity;
-      var scoresRow = new Float32Array(L);
-      for (var j = 0; j <= i; j++) {
-        var dot = 0;
-        for (var d = 0; d < A; d++) dot += Q[i * A + d] * K[j * A + d];
-        var score = dot * scale;
-        scoresRow[j] = score;
-        if (score > maxScore) maxScore = score;
+    // 2. Multi-layer transformer
+    for (var layer = 0; layer < C.numLayers; layer++) {
+      var lc = {};
+      var Wq = P['Wq_' + layer], Wk = P['Wk_' + layer], Wv = P['Wv_' + layer], Wo = P['Wo_' + layer];
+      var lnAg = P['ln_attn_g_' + layer], lnAb = P['ln_attn_b_' + layer];
+      var W1 = P['W1_' + layer], b1 = P['b1_' + layer];
+      var W2 = P['W2_' + layer], b2 = P['b2_' + layer];
+      var lnFg = P['ln_ffn_g_' + layer], lnFb = P['ln_ffn_b_' + layer];
+
+      // --- Multi-head causal self-attention ---
+      var Q = matmul(x, L, E, Wq, A);
+      var K = matmul(x, L, E, Wk, A);
+      var V_arr = matmul(x, L, E, Wv, A);
+
+      var attnOut = new Float32Array(L * A);
+      var allWeights = new Float32Array(nh * L * L);
+      var scale = 1.0 / Math.sqrt(hd);
+
+      for (var h = 0; h < nh; h++) {
+        var hOff = h * hd;
+        for (var i = 0; i < L; i++) {
+          var maxScore = -Infinity;
+          var scoresRow = new Float32Array(L);
+          for (var j = 0; j <= i; j++) {
+            var dot = 0;
+            for (var d = 0; d < hd; d++) {
+              dot += Q[i * A + hOff + d] * K[j * A + hOff + d];
+            }
+            scoresRow[j] = dot * scale;
+            if (scoresRow[j] > maxScore) maxScore = scoresRow[j];
+          }
+          var sumExp = 0;
+          for (var j = 0; j <= i; j++) {
+            allWeights[h * L * L + i * L + j] = Math.exp(scoresRow[j] - maxScore);
+            sumExp += allWeights[h * L * L + i * L + j];
+          }
+          for (var j = 0; j <= i; j++) {
+            allWeights[h * L * L + i * L + j] /= sumExp;
+          }
+          for (var d = 0; d < hd; d++) {
+            var sum = 0;
+            for (var j = 0; j <= i; j++) {
+              sum += allWeights[h * L * L + i * L + j] * V_arr[j * A + hOff + d];
+            }
+            attnOut[i * A + hOff + d] = sum;
+          }
+        }
       }
-      // Softmax
-      var sumExp = 0;
-      for (var j = 0; j <= i; j++) {
-        weights[i * L + j] = Math.exp(scoresRow[j] - maxScore);
-        sumExp += weights[i * L + j];
-      }
-      for (var j = 0; j <= i; j++) {
-        weights[i * L + j] /= sumExp;
-      }
-      // j > i stays 0 (causal mask)
+
+      // Output projection + residual + LayerNorm
+      var projOut = matmul(attnOut, L, A, Wo, E);
+      var residual = new Float32Array(L * E);
+      for (var i = 0; i < residual.length; i++) residual[i] = x[i] + projOut[i];
+      var lnAttnResult = layerNormRows(residual, L, E, lnAg, lnAb);
+      var attnResidual = lnAttnResult.out;
+
+      // --- FFN (last position only) ---
+      var lastHidden = new Float32Array(E);
+      for (var j = 0; j < E; j++) lastHidden[j] = attnResidual[(L - 1) * E + j];
+      var h1Pre = matmulAddBias(lastHidden, 1, E, W1, H, b1);
+      var h1Gelu = gelu(h1Pre);
+      var lnFfnResult = layerNorm(h1Gelu, lnFg, lnFb);
+      var ffnOut = matmulAddBias(lnFfnResult.out, 1, H, W2, E, b2);
+
+      // Residual: xOut = copy(attnResidual), xOut[last] += ffnOut
+      var xOut = new Float32Array(attnResidual);
+      for (var j = 0; j < E; j++) xOut[(L - 1) * E + j] += ffnOut[j];
+
+      // Save cache for backward
+      lc.x_before = x;
+      lc.Q = Q; lc.K = K; lc.V = V_arr;
+      lc.weights = allWeights;
+      lc.attnOut = attnOut;
+      lc.projOut = projOut;
+      lc.residual = residual;
+      lc.lnAttnResult = lnAttnResult;
+      lc.attnResidual = attnResidual;
+      lc.lastHidden = lastHidden;
+      lc.h1Pre = h1Pre;
+      lc.h1Gelu = h1Gelu;
+      lc.lnFfnResult = lnFfnResult;
+      lc.ffnOut = ffnOut;
+      lc.xOut = xOut;
+      caches.push(lc);
+      x = xOut;
     }
 
-    // Attention output: attnOut = weights @ V → L x A
-    var attnOut = matmul(weights, L, L, V, A);
-
-    // Output projection: projOut = attnOut @ Wo → L x E
-    var projOut = matmul(attnOut, L, A, P.Wo, E);
-
-    // Residual + per-position LayerNorm: residual = embOut + projOut
-    var residual = new Float32Array(L * E);
-    for (var i = 0; i < residual.length; i++) residual[i] = embOut[i] + projOut[i];
-    var lnAttnResult = layerNormRows(residual, L, E, P.ln_attn_gamma, P.ln_attn_beta);
-    var attnResidual = lnAttnResult.out;
-
-    // 3. FFN — use LAST position only (like a real transformer)
-    var lastHidden = new Float32Array(E);
-    for (var j = 0; j < E; j++) lastHidden[j] = attnResidual[(L - 1) * E + j];
-
-    // Layer 1: lastHidden @ W1 + b1 → GELU → LayerNorm → Dropout
-    var h1Pre = matmulAddBias(lastHidden, 1, E, P.W1, C.hiddenDim, P.b1);
-    var h1Gelu = gelu(h1Pre);
-    var ln1Result = layerNorm(h1Gelu, P.ln1_gamma, P.ln1_beta);
-    var ln1Out = ln1Result.out;
-    var drop1Result = dropout(ln1Out, C.dropoutRate, isTraining);
-    var h1 = drop1Result.out;
-
-    // Layer 2: h1 @ W2 + b2 → GELU → LayerNorm → Dropout + Residual(h1)
-    var h2Pre = matmulAddBias(h1, 1, C.hiddenDim, P.W2, C.hiddenDim, P.b2);
-    var h2Gelu = gelu(h2Pre);
-    var ln2Result = layerNorm(h2Gelu, P.ln2_gamma, P.ln2_beta);
-    var ln2Out = ln2Result.out;
-    var drop2Result = dropout(ln2Out, C.dropoutRate, isTraining);
-    var h2 = drop2Result.out;
-    for (var ri = 0; ri < h2.length; ri++) h2[ri] += h1[ri];
-
-    // 4. Output: h2 @ W3 + b3
-    var logits = matmulAddBias(h2, 1, C.hiddenDim, P.W3, this.vocabSize, P.b3);
+    // 3. Output projection (last position) → logits
+    var lastOut = new Float32Array(E);
+    for (var j = 0; j < E; j++) lastOut[j] = x[(L - 1) * E + j];
+    var logits = matmulAddBias(lastOut, 1, E, P.W_out, Vocab, P.b_out);
 
     return {
       logits: logits,
       cache: {
         inputIds: inputIds,
-        embOut: embOut, Q: Q, K: K, V: V, weights: weights,
-        attnOut: attnOut, projOut: projOut, residual: residual,
-        lnAttnResult: lnAttnResult, attnResidual: attnResidual,
-        h1Pre: h1Pre, h1Gelu: h1Gelu, ln1Result: ln1Result, ln1Out: ln1Out, drop1Mask: drop1Result.mask, h1: h1,
-        h2Pre: h2Pre, h2Gelu: h2Gelu, ln2Result: ln2Result, ln2Out: ln2Out, drop2Mask: drop2Result.mask, h2: h2,
+        caches: caches,
+        x_final: x,
+        lastOut: lastOut,
+        L: L, E: E, A: A, H: H, nh: nh, hd: hd,
       }
     };
   }
 
-  // ===== 反向传播 (v7.0: Attention + Last-Position FFN) =====
+  // ===== v10.0: 反向传播入口 =====
   backward(targetId, fwd) {
-    var C = this.config;
-    var P = this.params;
     var Vocab = this.vocabSize;
-    var cache = fwd.cache;
-    var L = cache.inputIds.length;
-    var E = C.embedDim;
-    var A = C.attnDim;
-
-    // Softmax + Cross-entropy gradient
     var probs = softmax(fwd.logits);
     var dLogits = new Float32Array(Vocab);
     for (var i = 0; i < Vocab; i++) dLogits[i] = probs[i];
     dLogits[targetId] -= 1.0;
-
-    return this._backwardCore(cache, dLogits, L, E, A, Vocab);
+    return this._backwardCore(dLogits, fwd.cache);
   }
 
-  // ===== 反向传播（使用预计算的dLogits，支持标签平滑） =====
+  // ===== v10.0: 反向传播（使用预计算dLogits，支持标签平滑） =====
   backwardWithGrad(inputIds, fwd, dLogits) {
-    var C = this.config;
-    var Vocab = this.vocabSize;
-    var cache = fwd.cache;
-    var L = inputIds.length;
-    var E = C.embedDim;
-    var A = C.attnDim;
-
-    return this._backwardCore(cache, dLogits, L, E, A, Vocab);
+    return this._backwardCore(dLogits, fwd.cache);
   }
 
-  // ===== 反向传播核心（共享逻辑） =====
-  _backwardCore(cache, dLogits, L, E, A, Vocab) {
+  // ===== v10.0: 反向传播核心 (多层多头Transformer) =====
+  _backwardCore(dLogits, cache) {
     var C = this.config;
     var P = this.params;
+    var g = {};
+    for (var k in P) {
+      g[k] = new Float32Array(P[k].length);
+    }
 
-    // --- FFN backward (last position only) ---
-    var dW3 = matmulTransA(cache.h2, 1, C.hiddenDim, dLogits, Vocab);
-    var db3 = dLogits;
-    var dh2 = matmulTransB(dLogits, 1, Vocab, P.W3, C.hiddenDim, Vocab);
+    var L = cache.L, E = cache.E, A = cache.A, H = cache.H;
+    var nh = cache.nh, hd = cache.hd;
+    var Vocab = this.vocabSize;
+    var scale = 1.0 / Math.sqrt(hd);
 
-    var dLn2Out = dropoutGrad(dh2, cache.drop2Mask);
-    var ln2Grad = layerNormGrad(cache.h2Gelu, P.ln2_gamma, cache.ln2Result, dLn2Out);
-    var dh2Pre = geluGrad(cache.h2Pre, ln2Grad.dx);
+    // --- Output layer backward ---
+    // W_out is E×Vocab. lastOut is 1×E. dLogits is 1×Vocab.
+    var dLastOut = matmulTransB(dLogits, 1, Vocab, P.W_out, E, Vocab); // 1×E
+    g.W_out = matmulTransA(cache.lastOut, 1, E, dLogits, Vocab); // E×Vocab
+    g.b_out = dLogits.slice();
 
-    var dW2 = matmulTransA(cache.h1, 1, C.hiddenDim, dh2Pre, C.hiddenDim);
-    var db2 = dh2Pre;
-    var dh1 = matmulTransB(dh2Pre, 1, C.hiddenDim, P.W2, C.hiddenDim, C.hiddenDim);
-    for (var rri = 0; rri < dh1.length; rri++) dh1[rri] += dh2[rri];  // residual
+    // dX_final: gradient w.r.t. x_final (only last position has direct grad)
+    var dx = new Float32Array(L * E);
+    for (var j = 0; j < E; j++) dx[(L - 1) * E + j] = dLastOut[j];
 
-    var dLn1Out = dropoutGrad(dh1, cache.drop1Mask);
-    var ln1Grad = layerNormGrad(cache.h1Gelu, P.ln1_gamma, cache.ln1Result, dLn1Out);
-    var dh1Pre = geluGrad(cache.h1Pre, ln1Grad.dx);
+    // --- Backward through layers (reverse order) ---
+    for (var layer = C.numLayers - 1; layer >= 0; layer--) {
+      var lc = cache.caches[layer];
+      var Wq = P['Wq_' + layer], Wk = P['Wk_' + layer], Wv = P['Wv_' + layer], Wo = P['Wo_' + layer];
+      var W1 = P['W1_' + layer], W2 = P['W2_' + layer];
+      var lnFg = P['ln_ffn_g_' + layer], lnFb = P['ln_ffn_b_' + layer];
+      var lnAg = P['ln_attn_g_' + layer], lnAb = P['ln_attn_b_' + layer];
 
-    // dW1 = lastHidden^T @ dh1Pre → E x hiddenDim
-    var dW1 = matmulTransA(cache.attnResidual.subarray((L - 1) * E, L * E), 1, E, dh1Pre, C.hiddenDim);
-    var db1 = dh1Pre;
-    // dLastHidden = dh1Pre @ W1^T → 1 x E
-    var dLastHidden = matmulTransB(dh1Pre, 1, C.hiddenDim, P.W1, E, C.hiddenDim);
-
-    // --- Attention backward ---
-    // dAttnResidual: L x E, only last row is non-zero (from FFN)
-    var dAttnResidual = new Float32Array(L * E);
-    for (var j = 0; j < E; j++) dAttnResidual[(L - 1) * E + j] = dLastHidden[j];
-
-    // LayerNorm (per-row) backward
-    var lnAttnGrad = layerNormRowsGrad(cache.residual, L, E, P.ln_attn_gamma, cache.lnAttnResult, dAttnResidual);
-    // dResidual = lnAttnGrad.dx (L x E)
-    var dResidual = lnAttnGrad.dx;
-
-    // Residual: dProjOut = dResidual, dEmbOut = dResidual (both from residual path)
-    var dProjOut = dResidual;
-    var dEmbOut = new Float32Array(dResidual);  // copy, will add attention path later
-
-    // dWo = attnOut^T @ dProjOut → A x E
-    var dWo = matmulTransA(cache.attnOut, L, A, dProjOut, E);
-    // dAttnOut = dProjOut @ Wo^T → L x A
-    var dAttnOut = matmulTransB(dProjOut, L, E, P.Wo, A, E);
-
-    // dWeights = dAttnOut @ V^T → L x L
-    var dWeights = matmulTransB(dAttnOut, L, A, cache.V, L, A);
-    // dV = weights^T @ dAttnOut → L x A
-    var dV = matmulTransA(cache.weights, L, L, dAttnOut, A);
-
-    // Softmax backward: dScores[i][j] = weights[i][j] * (dWeights[i][j] - dot)
-    var dScores = new Float32Array(L * L);
-    for (var i = 0; i < L; i++) {
-      var dot = 0;
-      for (var j = 0; j <= i; j++) {
-        dot += dWeights[i * L + j] * cache.weights[i * L + j];
+      // xOut = attnResidual (copy), xOut[last] += ffnOut
+      var dAttnResidual = new Float32Array(dx);
+      var dFfnOut = new Float32Array(E);
+      for (var j = 0; j < E; j++) {
+        dFfnOut[j] = dx[(L - 1) * E + j];
       }
-      for (var j = 0; j <= i; j++) {
-        dScores[i * L + j] = cache.weights[i * L + j] * (dWeights[i * L + j] - dot);
+
+      // FFN backward: W2 is H×E. lnFfnOut is 1×H. dFfnOut is 1×E.
+      g['W2_' + layer] = matmulTransA(lc.lnFfnResult.out, 1, H, dFfnOut, E); // H×E
+      g['b2_' + layer] = dFfnOut.slice();
+      var dLnFfnOut = matmulTransB(dFfnOut, 1, E, W2, H, E); // 1×H
+      var dLnFfn = layerNormGrad(lc.h1Gelu, lnFg, lc.lnFfnResult, dLnFfnOut);
+      g['ln_ffn_g_' + layer] = dLnFfn.dGamma;
+      g['ln_ffn_b_' + layer] = dLnFfn.dBeta;
+      var dh1Gelu = dLnFfn.dx;
+      var dh1Pre = geluGrad(lc.h1Pre, dh1Gelu);
+      // W1 is E×H. lastHidden is 1×E. dh1Pre is 1×H.
+      g['W1_' + layer] = matmulTransA(lc.lastHidden, 1, E, dh1Pre, H); // E×H
+      g['b1_' + layer] = dh1Pre.slice();
+      var dLastHidden = matmulTransB(dh1Pre, 1, H, W1, E, H); // 1×E
+
+      // dAttnResidual[last] += dLastHidden
+      for (var j = 0; j < E; j++) {
+        dAttnResidual[(L - 1) * E + j] += dLastHidden[j];
+      }
+
+      // LayerNorm backward: attnResidual = lnAttn(residual)
+      var dResidual = layerNormRowsGrad(lc.residual, L, E, lnAg, lc.lnAttnResult, dAttnResidual);
+      g['ln_attn_g_' + layer] = dResidual.dGamma;
+      g['ln_attn_b_' + layer] = dResidual.dBeta;
+      var dPreLn = dResidual.dx;
+
+      // residual = x_before + projOut
+      var dXbefore = new Float32Array(dPreLn);
+      var dProjOut = new Float32Array(dPreLn);
+
+      // Wo is A×E. attnOut is L×A. dProjOut is L×E.
+      var dAttnOut = matmulTransB(dProjOut, L, E, Wo, A, E); // L×A
+      g['Wo_' + layer] = matmulTransA(lc.attnOut, L, A, dProjOut, E); // A×E
+
+      // Multi-head attention backward
+      var dQ = new Float32Array(L * A);
+      var dK = new Float32Array(L * A);
+      var dV = new Float32Array(L * A);
+      var weights = lc.weights;
+
+      for (var h = 0; h < nh; h++) {
+        var hOff = h * hd;
+        for (var i = 0; i < L; i++) {
+          // dV
+          for (var j = 0; j <= i; j++) {
+            for (var d = 0; d < hd; d++) {
+              dV[j * A + hOff + d] += weights[h * L * L + i * L + j] * dAttnOut[i * A + hOff + d];
+            }
+          }
+          // dWeights
+          var dWeightsRow = new Float32Array(L);
+          for (var j = 0; j <= i; j++) {
+            var dw = 0;
+            for (var d = 0; d < hd; d++) {
+              dw += dAttnOut[i * A + hOff + d] * lc.V[j * A + hOff + d];
+            }
+            dWeightsRow[j] = dw;
+          }
+          // Softmax backward
+          var dot_wd = 0;
+          for (var j = 0; j <= i; j++) {
+            dot_wd += weights[h * L * L + i * L + j] * dWeightsRow[j];
+          }
+          var dScores = new Float32Array(L);
+          for (var j = 0; j <= i; j++) {
+            dScores[j] = weights[h * L * L + i * L + j] * (dWeightsRow[j] - dot_wd);
+          }
+          // dQ, dK
+          for (var d = 0; d < hd; d++) {
+            var s = 0;
+            for (var j = 0; j <= i; j++) {
+              s += dScores[j] * lc.K[j * A + hOff + d];
+            }
+            dQ[i * A + hOff + d] += s * scale;
+          }
+          for (var j = 0; j <= i; j++) {
+            for (var d = 0; d < hd; d++) {
+              dK[j * A + hOff + d] += dScores[j] * lc.Q[i * A + hOff + d] * scale;
+            }
+          }
+        }
+      }
+
+      // Wq/Wk/Wv are E×A. x_before is L×E. dQ/dK/dV are L×A.
+      g['Wq_' + layer] = matmulTransA(lc.x_before, L, E, dQ, A); // E×A
+      g['Wk_' + layer] = matmulTransA(lc.x_before, L, E, dK, A); // E×A
+      g['Wv_' + layer] = matmulTransA(lc.x_before, L, E, dV, A); // E×A
+
+      var dXq = matmulTransB(dQ, L, A, Wq, E, A); // L×E
+      var dXk = matmulTransB(dK, L, A, Wk, E, A); // L×E
+      var dXv = matmulTransB(dV, L, A, Wv, E, A); // L×E
+
+      dx = new Float32Array(L * E);
+      for (var i = 0; i < dx.length; i++) {
+        dx[i] = dXbefore[i] + dXq[i] + dXk[i] + dXv[i];
       }
     }
 
-    // dQ = dScores @ K / scale → L x A
-    var scale = 1.0 / Math.sqrt(A);
-    var dQ = matmul(dScores, L, L, cache.K, A);
-    // dK = dScores^T @ Q / scale → L x A
-    var dK = matmulTransA(dScores, L, L, cache.Q, A);
-    // Apply scale
-    for (var i = 0; i < dQ.length; i++) { dQ[i] *= scale; dK[i] *= scale; }
-
-    // dWq = embOut^T @ dQ → E x A
-    var dWq = matmulTransA(cache.embOut, L, E, dQ, A);
-    var dWk = matmulTransA(cache.embOut, L, E, dK, A);
-    var dWv = matmulTransA(cache.embOut, L, E, dV, A);
-
-    // dEmbOutAttn = dQ @ Wq^T + dK @ Wk^T + dV @ Wv^T → L x E
-    var dEmbOutAttnQ = matmulTransB(dQ, L, A, P.Wq, E, A);
-    var dEmbOutAttnK = matmulTransB(dK, L, A, P.Wk, E, A);
-    var dEmbOutAttnV = matmulTransB(dV, L, A, P.Wv, E, A);
-    for (var i = 0; i < dEmbOut.length; i++) {
-      dEmbOut[i] += dEmbOutAttnQ[i] + dEmbOutAttnK[i] + dEmbOutAttnV[i];
-    }
-
-    // dEmb (scatter to vocabulary embeddings)
-    var dEmb = new Float32Array(Vocab * E);
+    // Embedding backward
     for (var i = 0; i < L; i++) {
       var id = cache.inputIds[i];
       for (var j = 0; j < E; j++) {
-        dEmb[id * E + j] += dEmbOut[i * E + j];
+        g.emb[id * E + j] += dx[i * E + j];
       }
     }
 
-    return {
-      emb: dEmb,
-      Wq: dWq, Wk: dWk, Wv: dWv, Wo: dWo,
-      ln_attn_gamma: lnAttnGrad.dGamma, ln_attn_beta: lnAttnGrad.dBeta,
-      W1: dW1, b1: db1, ln1_gamma: ln1Grad.dGamma, ln1_beta: ln1Grad.dBeta,
-      W2: dW2, b2: db2, ln2_gamma: ln2Grad.dGamma, ln2_beta: ln2Grad.dBeta,
-      W3: dW3, b3: db3,
-    };
+    return g;
   }
 
   // ===== Adam参数更新 (含学习率预热+余弦退火+权重衰减) =====
@@ -1371,9 +1435,9 @@ export class NiedieBrain {
       if (ctxIds.length > C.contextLen) ctxIds = ctxIds.slice(ctxIds.length - C.contextLen);
       
       // For each char in response, create a training example
-      // Context grows: predict response[0] from input context, then response[1] from input+response[0], etc.
+      // v10.0: Only predict first 5 chars of response for speed
       var runningCtx = ctxIds.slice();
-      for (var ri = 0; ri < responsePart.length && ri < 50; ri++) {
+      for (var ri = 0; ri < responsePart.length && ri < 5; ri++) {
         var targetChar = responsePart[ri];
         var targetId = this.charToId[targetChar];
         if (targetId === undefined) targetId = 0;
@@ -1451,6 +1515,12 @@ export class NiedieBrain {
         this.trainingProgress = this.trainStep / totalSteps;
         this.currentLoss = epochLoss / batchCount;
 
+        // v10.0: Enforce maxSteps limit
+        if (this.trainStep >= C.maxSteps) {
+          console.log('Reached maxSteps (' + C.maxSteps + '), stopping epoch early');
+          break;
+        }
+
         // Yield to UI every 5 batches
         if (batchCount % 5 === 0) {
           if (onProgress) onProgress(this.trainingProgress, this.currentLoss, epoch + 1, epochs);
@@ -1462,13 +1532,28 @@ export class NiedieBrain {
       var avgEpochLoss = epochLoss / batchCount;
       if (avgEpochLoss < this.bestLoss) {
         this.bestLoss = avgEpochLoss;
+        this.epochsSinceBest = 0;
         // Save best model checkpoint
         if (this.serializeBinary) {
           this.bestModel = this.serializeBinary();
         }
+      } else {
+        this.epochsSinceBest = (this.epochsSinceBest || 0) + 1;
       }
 
       if (onProgress) onProgress(this.trainingProgress, this.currentLoss, epoch + 1, epochs);
+
+      // v10.0: Early stopping — 3 consecutive epochs without improvement
+      if (this.epochsSinceBest >= 3) {
+        console.log('Early stopping at epoch ' + (epoch + 1) + ' (no improvement for 3 epochs)');
+        break;
+      }
+
+      // v10.0: Stop if maxSteps reached
+      if (this.trainStep >= C.maxSteps) {
+        console.log('maxSteps reached, stopping training');
+        break;
+      }
     }
 
     // Restore best model
@@ -2102,6 +2187,11 @@ export class NiedieBrain {
         minGenLen: this.config.minGenLen,
       };
       this.config = meta.config;
+      // v10.0: Reject incompatible old model formats
+      if (!this.config.numLayers || !this.config.numHeads) {
+        console.warn('Incompatible model format (pre-v10.0), rejecting load');
+        return false;
+      }
       // Restore generation-time config from code version
       this.config.topK = genConfig.topK;
       this.config.topP = genConfig.topP;

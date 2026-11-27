@@ -46,7 +46,7 @@
 //  v9.7: 后处理空格规范化(首尾trim、标点前后多余空格清理)
 //  v9.8: 语义连贯性评分(检测相邻句子共同字符比例、低连贯时降低质量分)
 //  v9.9: 余弦温度退火(替代线性退火、前段高温后段低温的平滑过渡)
-//  v10.0: 多层Transformer架构(3层) + 多头注意力(4头×24维) + 扩容(96/96/256) +
+//  v10.5: 多层Transformer架构(3层) + 多头注意力(4头×24维) + 扩容(96/96/256) +
 //         标准FFN(E→H→E) + 预训练权重格式变更 + 大幅扩充训练数据
 //  v10.3: PyTorch训练 + 权重导出(358K参数, 4105条数据, 26 epochs)
 //         Loss从4.21降至2.98, 生成可识别中文("我是逆蝶AI")
@@ -329,12 +329,6 @@ async function loadPretrainedWeights() {
     var url = (typeof document !== 'undefined' && document.currentScript)
       ? document.currentScript.src.replace(/brain\.js.*$/, '') + 'pretrained.bin'
       : './pretrained.bin';
-    // 如果是ES module，使用import.meta.url
-    try {
-      if (import.meta && import.meta.url) {
-        url = import.meta.url.replace(/brain\.js.*$/, '') + 'pretrained.bin';
-      }
-    } catch(e2) {}
     var resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     _pretrainedCache = await resp.text();
@@ -948,11 +942,11 @@ export class NiedieBrain {
       warmupSteps: 200,
       lrDecay: 0.95,
       maxSteps: 20000,
-      topK: 20,
+      topK: 25,
       topP: 0.9,
-      repetitionPenalty: 1.5,
-      frequencyPenalty: 0.5,
-      noRepeatNgram: 3,
+      repetitionPenalty: 1.3,
+      frequencyPenalty: 0.4,
+      noRepeatNgram: 4,
       minGenLen: 8,
       labelSmoothing: 0.1,
     };
@@ -1024,7 +1018,7 @@ export class NiedieBrain {
     return s;
   }
 
-  // ===== v10.0: 参数初始化 (多层多头Transformer) =====
+  // ===== v10.5: 参数初始化 (多层多头Transformer) =====
   initParams() {
     var C = this.config;
     var V = this.vocabSize;
@@ -1070,7 +1064,7 @@ export class NiedieBrain {
     this.optEps = 1e-8;
   }
 
-  // ===== v10.0: 前向传播 (多层多头Transformer + 最后位置FFN) =====
+  // ===== v10.5: 前向传播 (多层多头Transformer + 最后位置FFN) =====
   forward(inputIds, isTraining) {
     var C = this.config;
     var P = this.params;
@@ -1198,7 +1192,7 @@ export class NiedieBrain {
     };
   }
 
-  // ===== v10.0: 反向传播入口 =====
+  // ===== v10.5: 反向传播入口 =====
   backward(targetId, fwd) {
     var Vocab = this.vocabSize;
     var probs = softmax(fwd.logits);
@@ -1208,12 +1202,12 @@ export class NiedieBrain {
     return this._backwardCore(dLogits, fwd.cache);
   }
 
-  // ===== v10.0: 反向传播（使用预计算dLogits，支持标签平滑） =====
+  // ===== v10.5: 反向传播（使用预计算dLogits，支持标签平滑） =====
   backwardWithGrad(inputIds, fwd, dLogits) {
     return this._backwardCore(dLogits, fwd.cache);
   }
 
-  // ===== v10.0: 反向传播核心 (多层多头Transformer) =====
+  // ===== v10.5: 反向传播核心 (多层多头Transformer) =====
   _backwardCore(dLogits, cache) {
     var C = this.config;
     var P = this.params;
@@ -1512,7 +1506,7 @@ export class NiedieBrain {
         this.trainingProgress = this.trainStep / totalSteps;
         this.currentLoss = epochLoss / batchCount;
 
-        // v10.0: Enforce maxSteps limit
+        // v10.5: Enforce maxSteps limit
         if (this.trainStep >= C.maxSteps) {
           console.log('Reached maxSteps (' + C.maxSteps + '), stopping epoch early');
           break;
@@ -1547,13 +1541,13 @@ export class NiedieBrain {
 
       if (onProgress) onProgress(this.trainingProgress, this.currentLoss, epoch + 1, epochs);
 
-      // v10.0: Early stopping — 3 consecutive epochs without improvement
+      // v10.5: Early stopping — 3 consecutive epochs without improvement
       if (this.epochsSinceBest >= 3) {
         console.log('Early stopping at epoch ' + (epoch + 1) + ' (no improvement for 3 epochs)');
         break;
       }
 
-      // v10.0: Stop if maxSteps reached
+      // v10.5: Stop if maxSteps reached
       if (this.trainStep >= C.maxSteps) {
         console.log('maxSteps reached, stopping training');
         break;
@@ -2191,9 +2185,9 @@ export class NiedieBrain {
         minGenLen: this.config.minGenLen,
       };
       this.config = meta.config;
-      // v10.0: Reject incompatible old model formats
+      // v10.5: Reject incompatible old model formats
       if (!this.config.numLayers || !this.config.numHeads) {
-        console.warn('Incompatible model format (pre-v10.0), rejecting load');
+        console.warn('Incompatible model format (pre-v10.5), rejecting load');
         return false;
       }
       // Restore generation-time config from code version

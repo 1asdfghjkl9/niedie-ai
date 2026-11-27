@@ -975,30 +975,26 @@ export class NiedieBrain {
     return this.deserializeBinary(data);
   }
 
-  // ===== Tokenizer =====
+  // ===== Tokenizer (v10.1: 词组级 — 常见2-3字词作为单token) =====
   buildVocab(text) {
-    // v7.3: Limit vocab to top 500 most frequent characters for denser training
-    var freqMap = {};
+    // v10.2: 纯字符级tokenizer — 词组级实验失败(loss卡在3.8)
+    var charFreq = {};
     for (var i = 0; i < text.length; i++) {
       var ch = text[i];
-      freqMap[ch] = (freqMap[ch] || 0) + 1;
+      charFreq[ch] = (charFreq[ch] || 0) + 1;
     }
-    // Always include essential punctuation
     var essential = ['\n', '：', '，', '。', '！', '？', ' ', '、', '；', '-', '/'];
     for (var e of essential) {
-      if (!freqMap[e]) freqMap[e] = 1;
+      if (!charFreq[e]) charFreq[e] = 1;
     }
-    // Sort by frequency descending, take top 498 (+ pad + unk = 500)
-    var sorted = Object.keys(freqMap).sort(function(a, b) {
-      return freqMap[b] - freqMap[a];
+    var sorted = Object.keys(charFreq).sort(function(a, b) {
+      return charFreq[b] - charFreq[a];
     });
-    var maxVocab = 500;
-    // Index 0 = <pad>, Index 1 = <unk>
     this.vocab = ['<pad>', '<unk>'];
     this.charToId = { '<pad>': 0, '<unk>': 1 };
     this.idToChar = { 0: '<pad>', 1: '<unk>' };
     var count = 2;
-    for (var i = 0; i < sorted.length && count < maxVocab; i++) {
+    for (var i = 0; i < sorted.length && count < 500; i++) {
       var ch = sorted[i];
       this.vocab.push(ch);
       this.charToId[ch] = count;
@@ -1011,8 +1007,8 @@ export class NiedieBrain {
   encode(text) {
     var ids = [];
     for (var i = 0; i < text.length; i++) {
-      var ch = text[i];
-      ids.push(this.charToId[ch] !== undefined ? this.charToId[ch] : 1);  // 1 = <unk>
+      var id = this.charToId[text[i]];
+      ids.push(id !== undefined ? id : 1);
     }
     return ids;
   }
@@ -1020,7 +1016,8 @@ export class NiedieBrain {
   decode(ids) {
     var s = '';
     for (var i = 0; i < ids.length; i++) {
-      s += this.idToChar[ids[i]] || '';
+      var ch = this.idToChar[ids[i]];
+      if (ch && ch !== '<pad>' && ch !== '<unk>') s += ch;
     }
     return s;
   }
@@ -1417,34 +1414,28 @@ export class NiedieBrain {
     var V = this.vocabSize;
     var smoothEps = C.labelSmoothing || 0.1;
 
-    // Build pair-based training examples: each TRAINING_DATA entry is "用户：xxx\n逆蝶：yyy"
-    // For each entry, we teach the model to predict the response chars given the input
+    // v10.3: pair-based训练 — 从输入上下文预测回复的每个字符
     var examples = [];
     for (var d = 0; d < data.length; d++) {
       var entry = data[d];
-      // Split at \n to get input/response parts
       var nlIdx = entry.indexOf('\n');
       if (nlIdx < 0) continue;
       var inputPart = entry.substring(0, nlIdx + 1);
       var responsePart = entry.substring(nlIdx + 1);
       
-      // Use last contextLen chars of inputPart as context, predict first char of response
-      var contextStr = inputPart.substring(Math.max(0, inputPart.length - C.contextLen));
-      var ctxIds = this.encode(contextStr);
+      var ctxIds = this.encode(inputPart);
+      var responseIds = this.encode(responsePart);
       
-      // Pad context to contextLen
+      // 取最后contextLen个字符作为上下文
       while (ctxIds.length < C.contextLen) ctxIds.unshift(0);
       if (ctxIds.length > C.contextLen) ctxIds = ctxIds.slice(ctxIds.length - C.contextLen);
       
-      // For each char in response, create a training example
-      // v10.0: Only predict first 5 chars of response for speed
+      // 预测回复的每个字符（最多15个）
       var runningCtx = ctxIds.slice();
-      for (var ri = 0; ri < responsePart.length && ri < 10; ri++) {
-        var targetChar = responsePart[ri];
-        var targetId = this.charToId[targetChar];
+      for (var ri = 0; ri < responseIds.length && ri < 15; ri++) {
+        var targetId = responseIds[ri];
         if (targetId === undefined) targetId = 0;
         examples.push({ input: runningCtx.slice(), target: targetId });
-        // Shift context: remove first char, add target char
         runningCtx.shift();
         runningCtx.push(targetId);
       }

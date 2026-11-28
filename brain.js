@@ -932,10 +932,10 @@ export class NiedieBrain {
   constructor() {
     this.config = {
       contextLen: 32,
-      embedDim: 96,
-      attnDim: 96,
-      hiddenDim: 256,
-      numLayers: 3,
+      embedDim: 128,
+      attnDim: 128,
+      hiddenDim: 384,
+      numLayers: 4,
       numHeads: 4,
       learningRate: 0.003,
       batchSize: 8,

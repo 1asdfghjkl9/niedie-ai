@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v8.1 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v10.5 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -27,6 +27,9 @@
 //        单字符最大重复次数限制(3次)、生成质量评分
 //  v8.1: 束搜索解码(beam width=3, prefix=5)替代贪心选择、
 //        对数概率累积保证数值稳定、beam选择后继续采样
+//  v10.0: 3层Transformer + 4头注意力重写, FFN仅最后位置,
+//         字符级tokenizer, PyTorch训练+权重导出
+//  v10.5: 4层128维扩容, 下载版自包含HTML, Loss 1.12
 //  v8.2: beam search长度归一化(避免短序列偏好)、
 //        自适应top-p(高置信度时收窄、低置信度时放宽)
 //  v8.3: top-k退火(前期大k增多样性、后期小k增连贯)
@@ -929,10 +932,10 @@ export class NiedieBrain {
   constructor() {
     this.config = {
       contextLen: 32,
-      embedDim: 96,
-      attnDim: 96,
-      hiddenDim: 256,
-      numLayers: 3,
+      embedDim: 128,
+      attnDim: 128,
+      hiddenDim: 384,
+      numLayers: 4,
       numHeads: 4,
       learningRate: 0.003,
       batchSize: 8,

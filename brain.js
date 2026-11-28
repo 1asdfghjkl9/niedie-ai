@@ -1,5 +1,5 @@
 // ============================================================
-//  逆蝶Brain v10.5 — 纯JavaScript从零实现的神经网络语言模型
+//  逆蝶Brain v10.6 — 纯JavaScript从零实现的神经网络语言模型
 //  无任何第三方依赖，手搓前向传播 + 反向传播 + Adam优化器
 //  v6.0: 位置编码、残差连接、配对训练、标签平滑、余弦退火LR、核采样
 //  v6.1: Xavier初始化、频率惩罚、no-repeat-ngram、模型扩容(48/384/32)、
@@ -30,6 +30,8 @@
 //  v10.0: 3层Transformer + 4头注意力重写, FFN仅最后位置,
 //         字符级tokenizer, PyTorch训练+权重导出
 //  v10.5: 4层128维扩容, 下载版自包含HTML, Loss 1.12
+//  v10.6: 生成策略优化 — beam search 4×12, 低温度(0.4), 积极截断,
+//         更强重复惩罚(1.4), noRepeatNgram=3, 95条高质量数据, Loss 0.89
 //  v8.2: beam search长度归一化(避免短序列偏好)、
 //        自适应top-p(高置信度时收窄、低置信度时放宽)
 //  v8.3: top-k退火(前期大k增多样性、后期小k增连贯)
@@ -945,11 +947,11 @@ export class NiedieBrain {
       warmupSteps: 200,
       lrDecay: 0.95,
       maxSteps: 20000,
-      topK: 25,
-      topP: 0.9,
-      repetitionPenalty: 1.3,
-      frequencyPenalty: 0.4,
-      noRepeatNgram: 4,
+      topK: 20,
+      topP: 0.85,
+      repetitionPenalty: 1.4,
+      frequencyPenalty: 0.5,
+      noRepeatNgram: 3,
       minGenLen: 8,
       labelSmoothing: 0.1,
     };
@@ -1801,8 +1803,8 @@ export class NiedieBrain {
   generate(prompt, maxLen, temperature) {
     if (!this.trained) return '模型尚未训练，请先点击训练按钮。';
     var C = this.config;
-    temperature = temperature || 0.5;
-    maxLen = maxLen || 200;
+    temperature = temperature || 0.4;
+    maxLen = maxLen || 150;
 
     var genContext = (prompt || '').slice(-60);
     var output = '';
@@ -1817,14 +1819,14 @@ export class NiedieBrain {
     var lowConfidenceStreak = 0;
 
     // v8.1: Beam search for stable prefix
-    var beamResult = this.beamSearch(genContext, 3, 8); // v9.2: extended from 5 to 8
+    var beamResult = this.beamSearch(genContext, 4, 12); // v10.6: expanded from 3×8 to 4×12
     var beamIds = beamResult.ids;
 
     for (var t = 0; t < maxLen; t++) {
       var nextId;
       
       // v8.1: Beam search for first 5 tokens, then temperature sampling
-      if (t < 8 && beamIds[t] !== undefined) { // v9.2: extended from 5 to 8
+      if (t < 12 && beamIds[t] !== undefined) { // v10.6: extended from 8 to 12
         // Beam search already done before the loop; use pre-computed ids
         nextId = beamIds[t];
       } else {
@@ -1900,7 +1902,7 @@ export class NiedieBrain {
       }
       
       // v9.0: Track confidence for early stopping
-      var usedBeam = (t < 8 && beamIds[t] !== undefined); // v9.2: extended from 5 to 8
+      var usedBeam = (t < 12 && beamIds[t] !== undefined); // v10.6: extended from 8 to 12
       if (usedBeam) {
         confidenceHistory.push(0.5); // default for beam search tokens
         lowConfidenceStreak = 0;
@@ -1953,9 +1955,9 @@ export class NiedieBrain {
         }
       }
       
-      // v8.5: Length-dependent sentence ending — probability increases with length
+      // v10.6: More aggressive sentence ending — stop sooner when we have a complete sentence
       if (output.length > C.minGenLen && (output.endsWith('。') || output.endsWith('！') || output.endsWith('？'))) {
-        var endProb = 0.2 + 0.4 * Math.min((output.length - C.minGenLen) / 60, 1.0); // 0.2→0.6
+        var endProb = 0.35 + 0.4 * Math.min((output.length - C.minGenLen) / 40, 1.0); // 0.35→0.75
         if (Math.random() < endProb) break;
       }
     }
@@ -1963,11 +1965,15 @@ export class NiedieBrain {
     // v9.8: Compute semantic coherence score before post-processing
     var coherenceScore = this.computeCoherence(output);
     // If coherence is very low, the output is likely garbled — still return it but log the score
-    if (coherenceScore < 0.15 && output.length > 20) {
+    // v10.6: Lower coherence threshold — be more aggressive about truncating garbled output
+    if (coherenceScore < 0.2 && output.length > 15) {
       // Low coherence: try to salvage by keeping only the first sentence
       var firstSentEnd = output.search(/[。！？]/);
       if (firstSentEnd > 4 && firstSentEnd < output.length - 1) {
         output = output.slice(0, firstSentEnd + 1);
+      } else if (output.length > 20) {
+        // No sentence end found — keep first 15 chars
+        output = output.slice(0, 15);
       }
     }
 
@@ -2074,8 +2080,8 @@ export class NiedieBrain {
     }
     result = cleaned;
     
-    // Trim to last sentence-ending punctuation if output is very long
-    if (result.length > 50) {
+    // v10.6: Lower threshold for trimming to last sentence — encourage shorter responses
+    if (result.length > 35) {
       var lastEnd = Math.max(result.lastIndexOf('。'), result.lastIndexOf('！'), result.lastIndexOf('？'));
       if (lastEnd > 10) {
         result = result.substring(0, lastEnd + 1);
